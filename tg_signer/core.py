@@ -848,10 +848,12 @@ class BaseUserWorker(Generic[ConfigT]):
             fp.write(str(user))
 
     async def login(self, num_of_dialogs=20, print_chat=True):
-        self.log("开始登录...")
+        self.log("正在连接账号会话（无需重新登录）...")
         app = self.app
         async with app:
             me = await app.get_me()
+            me_name = getattr(me, "username", None) or getattr(me, "id", None)
+            self.log(f"账号会话连接成功: @{me_name}")
             self.set_me(me)
             latest_chats = []
             try:
