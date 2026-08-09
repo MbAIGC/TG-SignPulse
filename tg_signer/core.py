@@ -1118,8 +1118,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     def ensure_ctx(self) -> UserSignerWorkerContext:
         return UserSignerWorkerContext(
             waiter=Waiter(),
-            sign_chats=defaultdict(list),
-            chat_messages=defaultdict(dict),
+            sign_chats={},
+            chat_messages={},
             waiting_message=None,
             stop_after_current_action=False,
             stop_reason=None,
@@ -1539,7 +1539,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             if max_flow_attempts > 1:
                 self.log(f"开始第 {flow_attempt}/{max_flow_attempts} 次脚本流程尝试")
             try:
-                self.context.chat_messages[chat.chat_id].clear()
+                self.context.chat_messages.setdefault(chat.chat_id, {}).clear()
                 self.context.stop_after_current_action = False
                 self.context.stop_reason = None
                 self.context.last_callback_answer = None
@@ -1651,7 +1651,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         async def sign_once():
             success_count = 0
             for chat in config.chats:
-                self.context.sign_chats[chat.chat_id].append(chat)
+                self.context.sign_chats.setdefault(chat.chat_id, []).append(chat)
                 try:
                     await self.sign_a_chat(chat)
                     success_count += 1
@@ -1664,7 +1664,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     continue
                 finally:
                     # Always clear chat messages to prevent memory accumulation
-                    self.context.chat_messages[chat.chat_id].clear()
+                    self.context.chat_messages.setdefault(chat.chat_id, {}).clear()
 
                 await asyncio.sleep(config.sign_interval)
 
@@ -1793,7 +1793,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 level="WARNING",
             )
             return
-        chat_msgs = self.context.chat_messages[message.chat.id]
+        chat_msgs = self.context.chat_messages.setdefault(message.chat.id, {})
         chat_msgs[message.id] = message
         # Bound message cache per chat to prevent memory growth
         if len(chat_msgs) > 200:
@@ -2732,7 +2732,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                                     history_limit=history_limit,
                                     timeout=follow_timeout,
                                 )
-                            self.context.chat_messages[chat.chat_id][message.id] = None
+                            self.context.chat_messages.setdefault(chat.chat_id, {})[message.id] = None
                             return True
                         if matched:
                             self.context.waiting_message = None

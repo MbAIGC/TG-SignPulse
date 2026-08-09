@@ -87,6 +87,13 @@ docker compose logs -f        # 查看日志
      改为 `node:22-alpine`，删除 cross-env crypto 兼容
    - 后端：`pydantic<2` → `pydantic>=2,<3`（实测 2.13.4），代码原有
      v1/v2 双兼容层直接生效，21 个测试与启动冒烟全部通过
+6. **pydantic v2 运行期回归修复**
+   - 症状：任务执行报 `KeyError: <chat_id>`（sign_once 里
+     `self.context.sign_chats[chat.chat_id].append(chat)`）
+   - 原因：`UserSignerWorkerContext` 用 `defaultdict(list)` 构造但字段注解为
+     `dict`；v1 保留 defaultdict 实例，v2 校验时转为普通 dict，自动建键失效
+   - 修复：不再依赖 defaultdict，构造传普通 dict，所有下标写入改用
+     `setdefault(...)`；新增回归测试 `tests/test_pydantic_v2_context.py`
 
 ## 4. 已知问题 / 环境注意
 
