@@ -72,6 +72,11 @@ docker compose logs -f        # 查看日志
      兼容缺失 `-`/`-100` 前缀的历史 ID
 3. **日志措辞误导**（提交 `46e39ce`）
    - `开始登录...` → `正在连接账号会话（无需重新登录）...` + 连接成功账号名
+4. **文档调整**（提交 `ae46cba` 后续）
+   - 新增 `PROJECT_NOTES.md` 维护记录；README 改为中文默认
+     （`README.md`），英文同步为 `README_EN.md`，删除 `README_ZH.md`；
+     结构参照 fork [loochenx/TG-SignPulse](https://github.com/loochenx/TG-SignPulse)，
+     署名 Codex + Deepseek
 
 ## 4. 已知问题 / 环境注意
 
