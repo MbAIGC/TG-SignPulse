@@ -154,6 +154,9 @@ docker compose up -d
   kurigram 2.2.x 解码，会导致执行签到任务时报
   "Invalid base64-encoded string" 错误。现在导出使用当前格式（含 api_id、
   无版本前缀），并会自动重建旧的坏缓存。
+- 修复内存会话模式下的 `Failed to preheat chat_id` 错误：仅凭数字 chat_id
+  无法解析的会话（私有超级群/频道、缺失 `-100` 前缀的历史配置等），现在会
+  先扫描对话列表并把目标会话预热进 peer 缓存，再执行任务动作。
 
 ---
 

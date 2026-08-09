@@ -162,6 +162,10 @@ logging in. The container exposes a healthcheck on `/healthz`.
   string" errors when running sign tasks. Exports now use the current format
   (with `api_id`, no version prefix), and stale legacy caches are rebuilt
   automatically.
+- Fixed `Failed to preheat chat_id` errors with in-memory sessions: numeric
+  chat IDs that need a cached peer/access-hash (private supergroups/channels,
+  legacy IDs missing the `-100` prefix) are now resolved by scanning dialogs
+  and warming the peer cache before running task actions.
 
 ---
 

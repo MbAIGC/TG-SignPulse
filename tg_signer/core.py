@@ -1460,6 +1460,57 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                             continue
 
                 if not resolved_peer:
+                    # 内存会话没有持久化 peer 缓存（缺少 access_hash），
+                    # 通过遍历对话把目标会话拉回本地缓存后再解析，
+                    # 同时兼容历史配置中缺失负号/前缀的 chat_id。
+                    try:
+                        target_variants = {chat.chat_id}
+                        if isinstance(chat.chat_id, int):
+                            abs_id = abs(chat.chat_id)
+                            target_variants.add(abs_id)
+                            target_variants.add(-abs_id)
+                            try:
+                                target_variants.add(int(f"-100{abs_id}"))
+                            except Exception:
+                                pass
+                        target_name = (chat.name or "").strip().lower().lstrip("@")
+                        async for dialog in self.app.get_dialogs():
+                            dchat = getattr(dialog, "chat", None)
+                            if dchat is None:
+                                continue
+                            dchat_id = getattr(dchat, "id", None)
+                            if dchat_id is None:
+                                continue
+                            dchat_title = (
+                                getattr(dchat, "title", None) or ""
+                            ).strip().lower()
+                            dchat_username = (
+                                getattr(dchat, "username", None) or ""
+                            ).strip().lower()
+                            if (
+                                dchat_id in target_variants
+                                or (
+                                    target_name
+                                    and (
+                                        target_name == dchat_title
+                                        or target_name == dchat_username
+                                    )
+                                )
+                            ):
+                                await self.app.get_chat(dchat_id)
+                                self.log(
+                                    f"Preheated peer from dialogs: "
+                                    f"{chat.chat_id} -> {dchat_id}",
+                                    level="WARNING",
+                                )
+                                chat.chat_id = dchat_id
+                                resolved_peer = True
+                                last_error = None
+                                break
+                    except Exception as e2:
+                        last_error = e2
+
+                if not resolved_peer:
                     self.log(
                         f"Failed to preheat chat_id={chat.chat_id}, error={type(last_error).__name__}: {last_error}",
                         level="ERROR",
