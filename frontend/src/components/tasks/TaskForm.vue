@@ -17,6 +17,7 @@ const selectedAccount = ref('')
 const accountOptions = computed(() => accounts.value.map(a => ({ label: a.name, value: a.name })))
 const scheduleMode = ref<'scheduled' | 'listen'>('scheduled')
 const timeRange = ref('08:00-19:00')
+const dailyTimes = ref(1)
 const taskName = ref('')
 const availableChats = ref<any[]>([])
 const chatSearch = ref('')
@@ -43,6 +44,7 @@ const loadAccounts = async () => {
     if (props.initialTask) {
       taskName.value = props.initialTask.name || ''
       scheduleMode.value = props.initialTask.execution_mode === 'listen' ? 'listen' : 'scheduled'
+      dailyTimes.value = Number(props.initialTask.daily_times) || 1
       if (props.initialTask.execution_mode === 'range') timeRange.value = props.initialTask.range_start + '-' + props.initialTask.range_end
       else timeRange.value = props.initialTask.sign_at || '08:00-19:00'
       const taskAccs = props.initialTask.account_names?.length ? props.initialTask.account_names : [props.initialTask.account_name]
@@ -121,8 +123,8 @@ const moveAction=(i:number,d:number)=>{if(i+d<0||i+d>=actions.value.length)retur
 const buildPayload=()=>{let em='fixed',sa='08:00',rs='',re='';if(scheduleMode.value==='listen')em='listen';else{const p=timeRange.value.split('-');if(p.length===2){em='range';rs=p[0].trim();re=p[1].trim();sa=rs}else sa=timeRange.value.trim()||'08:00'}
 const ba:any[]=[];for(const a of actions.value){const o:any={};if(a.type==='delay')continue;if(a.type==='send_text'){o.action=1;o.text=a.value}else if(a.type==='send_dice'){o.action=2;o.dice=a.value||'\uD83C\uDFB2'}else if(a.type==='click_text_button'){o.action=3;o.text=a.value}else if(a.type==='vision_click'){o.action=4;if(a.aiPrompt)o.ai_prompt=a.aiPrompt}else if(a.type==='calc_send'){o.action=5;if(a.aiPrompt)o.ai_prompt=a.aiPrompt}else if(a.type==='vision_send'){o.action=6;if(a.aiPrompt)o.ai_prompt=a.aiPrompt}else if(a.type==='calc_click'){o.action=7;if(a.aiPrompt)o.ai_prompt=a.aiPrompt};const prev=actions.value[actions.value.indexOf(a)-1];if(prev&&prev.type==='delay'&&prev.value)o.delay=prev.value;ba.push(o)}
 let ca=ba;if(scheduleMode.value==='listen'){const kw=listenerKeywords.value.split('\n').map((k: string)=>k.trim()).filter(Boolean);const la:any={action:8,keywords:kw,match_mode:listenerMatchMode.value,push_channel:listenerPushChannel.value};if(listenerPushChannel.value==='forward'){if(listenerForwardChatId.value)la.forward_chat_id=listenerForwardChatId.value;if(listenerForwardThreadId.value)la.forward_message_thread_id=listenerForwardThreadId.value};if(listenerPushChannel.value==='bark'&&listenerBarkUrl.value)la.bark_url=listenerBarkUrl.value;if(listenerPushChannel.value==='custom'&&listenerCustomUrl.value)la.custom_url=listenerCustomUrl.value;if(listenerPushChannel.value==='continue'&&ba.length>0)la.continue_actions=ba;ca=[la]}
-return{name:taskName.value||selectedChatName.value||`task_${Date.now()}`,account_name:selectedAccounts.value[0]||'',account_names:allAccountsMode.value ? ['*'] : selectedAccounts.value,sign_at:sa,execution_mode:em,range_start:rs,range_end:re,random_seconds:0,chats:[{chat_id:selectedChatId.value,name:selectedChatName.value,actions:ca,message_thread_id:messageThreadId.value?Number(messageThreadId.value):undefined,source_account:selectedAccount.value||undefined}]}}
-watch([taskName,selectedAccounts,allAccountsMode,scheduleMode,timeRange,selectedChatId,selectedChatName,messageThreadId,actions,listenerKeywords,listenerMatchMode,listenerPushChannel,listenerForwardChatId,listenerForwardThreadId,listenerBarkUrl,listenerCustomUrl],()=>{emit('update:payload',buildPayload())},{deep:true})
+return{name:taskName.value||selectedChatName.value||`task_${Date.now()}`,account_name:selectedAccounts.value[0]||'',account_names:allAccountsMode.value ? ['*'] : selectedAccounts.value,sign_at:sa,execution_mode:em,range_start:rs,range_end:re,random_seconds:0,daily_times:Number(dailyTimes.value)||1,chats:[{chat_id:selectedChatId.value,name:selectedChatName.value,actions:ca,message_thread_id:messageThreadId.value?Number(messageThreadId.value):undefined,source_account:selectedAccount.value||undefined}]}}
+watch([taskName,selectedAccounts,allAccountsMode,scheduleMode,timeRange,dailyTimes,selectedChatId,selectedChatName,messageThreadId,actions,listenerKeywords,listenerMatchMode,listenerPushChannel,listenerForwardChatId,listenerForwardThreadId,listenerBarkUrl,listenerCustomUrl],()=>{emit('update:payload',buildPayload())},{deep:true})
 onMounted(()=>{loadAccounts()})
 </script>
 <template>
@@ -143,6 +145,10 @@ onMounted(()=>{loadAccounts()})
       <div class="space-y-1.5">
         <label class="text-xs font-semibold text-gray-500 tracking-wide uppercase">{{ t('taskForm.timeRange') }}</label>
         <input v-model="timeRange" :disabled="scheduleMode === 'listen'" :placeholder="scheduleMode === 'listen' ? '24H' : t('taskForm.timeRangePlaceholder')" class="w-full h-10 px-3 text-sm border border-gray-200 dark:border-gray-800/60 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 outline-none focus:border-gray-400 disabled:opacity-50 disabled:bg-gray-50 dark:disabled:bg-gray-950" />
+      </div>
+      <div class="space-y-1.5">
+        <label class="text-xs font-semibold text-gray-500 tracking-wide uppercase">{{ t('taskForm.dailyTimes') }}</label>
+        <input v-model.number="dailyTimes" type="number" min="1" max="5" step="1" :disabled="scheduleMode === 'listen'" :title="t('taskForm.dailyTimesHint')" class="w-full h-10 px-3 text-sm border border-gray-200 dark:border-gray-800/60 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 outline-none focus:border-gray-400 disabled:opacity-50 disabled:bg-gray-50 dark:disabled:bg-gray-950" />
       </div>
     </div>
     <div class="p-4 border border-sky-100 dark:border-gray-800/60 bg-sky-50/50 dark:bg-gray-900/40">

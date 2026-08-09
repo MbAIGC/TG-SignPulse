@@ -76,6 +76,7 @@ class SignTaskCreate(BaseModel):
     chats: List[ChatConfig] = Field(..., description="Chat configs")
     random_seconds: int = Field(0, description="Random delay seconds")
     sign_interval: Optional[int] = Field(None, description="Action interval seconds")
+    daily_times: int = Field(1, ge=1, le=5, description="每日签到次数 (1-5)")
     execution_mode: Optional[str] = Field("fixed", description="fixed/range")
     range_start: Optional[str] = Field(None, description="Range start")
     range_end: Optional[str] = Field(None, description="Range end")
@@ -106,6 +107,7 @@ class SignTaskUpdate(BaseModel):
     chats: Optional[List[ChatConfig]] = Field(None, description="Chat configs")
     random_seconds: Optional[int] = Field(None, description="Random delay seconds")
     sign_interval: Optional[int] = Field(None, description="Action interval seconds")
+    daily_times: Optional[int] = Field(None, ge=1, le=5, description="每日签到次数 (1-5)")
     execution_mode: Optional[str] = Field(None, description="fixed/range")
     range_start: Optional[str] = Field(None, description="Range start")
     range_end: Optional[str] = Field(None, description="Range end")
@@ -126,6 +128,7 @@ class SignTaskOut(BaseModel):
     chats: List[Dict[str, Any]]
     random_seconds: int
     sign_interval: int
+    daily_times: int = 1
     enabled: bool
     last_run: Optional[LastRunInfo] = None
     execution_mode: Optional[str] = "fixed"
@@ -217,6 +220,7 @@ async def create_sign_task(
             chats=chats_dict,
             random_seconds=payload.random_seconds,
             sign_interval=payload.sign_interval,
+            daily_times=payload.daily_times,
             execution_mode=payload.execution_mode or "fixed",
             range_start=payload.range_start or "",
             range_end=payload.range_end or "",
@@ -307,6 +311,7 @@ async def update_sign_task(
             chats=chats_dict,
             random_seconds=payload.random_seconds,
             sign_interval=payload.sign_interval,
+            daily_times=payload.daily_times,
             execution_mode=payload.execution_mode,
             range_start=payload.range_start,
             range_end=payload.range_end,

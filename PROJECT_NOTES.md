@@ -94,6 +94,13 @@ docker compose logs -f        # 查看日志
      `dict`；v1 保留 defaultdict 实例，v2 校验时转为普通 dict，自动建键失效
    - 修复：不再依赖 defaultdict，构造传普通 dict，所有下标写入改用
      `setdefault(...)`；新增回归测试 `tests/test_pydantic_v2_context.py`
+7. **每日签到次数（1-5 次/天）**
+   - 任务配置新增 `daily_times`（默认 1，1-5）；固定模式按 `index/总数*1440min`
+     偏移分散到一天内，range 模式把时间窗口等分为 N 段、每段随机执行一次；
+     Job ID 变为 `sign-<账号>-<任务>#<i>`，兼容移除旧 ID
+   - 涉及：`backend/scheduler`、`backend/services/sign_tasks.py`、
+     `backend/api/routes/sign_tasks_v2.py`、前端 TaskForm/i18n；
+     测试 `tests/test_scheduler.py`
 
 ## 4. 已知问题 / 环境注意
 

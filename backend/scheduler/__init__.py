@@ -51,6 +51,26 @@ def create_cron_trigger(cron_str: str) -> CronTrigger:
     return CronTrigger.from_crontab(cron_str)
 
 
+def _normalize_daily_times(value) -> int:
+    """每日签到次数：1-5，非法值回退为 1。"""
+    try:
+        return max(1, min(int(value), 5))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _clock_offset_cron(cron_str: str, index: int, total: int) -> str:
+    """给 HH:MM(:SS) 时间加上 index/total 天的偏移，用于每日多次执行分散。"""
+    if ":" not in cron_str:
+        return cron_str
+    t = _parse_clock_time(cron_str)
+    offset_min = round(index * 1440 / total)
+    total_min = t.hour * 60 + t.minute + offset_min
+    hour = (total_min // 60) % 24
+    minute = total_min % 60
+    return f"{t.second} {minute} {hour} * * *"
+
+
 async def _job_run_task(task_id: int) -> None:
     db: Session = get_session_local()()
     try:
@@ -64,7 +84,12 @@ async def _job_run_task(task_id: int) -> None:
         db.close()
 
 
-async def _job_run_sign_task(account_name: str, task_name: str) -> None:
+async def _job_run_sign_task(
+    account_name: str,
+    task_name: str,
+    index: int = 0,
+    total: int = 1,
+) -> None:
     """运行签到任务的 Job 包装器"""
     import asyncio
     import logging
@@ -109,14 +134,19 @@ async def _job_run_sign_task(account_name: str, task_name: str) -> None:
                     if end_dt < start_dt:
                         end_dt += timedelta(days=1)
 
-                    # 计算总秒数
+                    # 计算总秒数，并按每日次数分段（第 index 段内随机）
                     total_seconds = (end_dt - start_dt).total_seconds()
 
                     if total_seconds > 0:
-                        # 生成随机延迟
-                        delay_seconds = random.uniform(0, total_seconds)
+                        seg = total_seconds / max(total, 1)
+                        delay_seconds = random.uniform(
+                            index * seg,
+                            min((index + 1) * seg, total_seconds),
+                        )
                         logger.info(
-                            f"Scheduler: 任务 {task_name} 设置为随机时间段模式 ({range_start_str} - {range_end_str})"
+                            f"Scheduler: 任务 {task_name} 设置为随机时间段模式 "
+                            f"({range_start_str} - {range_end_str}) "
+                            f"第 {index + 1}/{total} 次"
                         )
                         logger.info(
                             f"Scheduler: 将随机等待 {int(delay_seconds)} 秒 ({delay_seconds / 60:.2f} 分钟) 后执行"
@@ -211,38 +241,41 @@ async def sync_jobs() -> None:
                 logger.warning("Skip scheduling sign task with missing account/name: %s", st)
                 continue
 
-            job_id = f"sign-{account_name}-{task_name}"
-            desired_ids.add(job_id)
+            daily_times = _normalize_daily_times(st.get("daily_times"))
+            job_ids = [
+                f"sign-{account_name}-{task_name}#{i}"
+                for i in range(daily_times)
+            ]
 
             # SignTask 目前默认都是启用的，或者根据 st['enabled']
-            if not st.get("enabled", True):
-                if job_id in existing_ids:
-                    scheduler.remove_job(job_id)
+            if not st.get("enabled", True) or st.get("execution_mode") == "listen":
+                for job_id in job_ids:
+                    if job_id in existing_ids:
+                        scheduler.remove_job(job_id)
                 continue
 
-            if st.get("execution_mode") == "listen":
-                if job_id in existing_ids:
-                    scheduler.remove_job(job_id)
-                continue
+            for i in range(daily_times):
+                job_id = job_ids[i]
+                desired_ids.add(job_id)
+                try:
+                    base_cron = st["sign_at"]
+                    if st.get("execution_mode") == "range" and st.get("range_start"):
+                        base_cron = st["range_start"]
+                    trigger_cron = base_cron
+                    if st.get("execution_mode") != "range" and daily_times > 1:
+                        trigger_cron = _clock_offset_cron(base_cron, i, daily_times)
+                    trigger = create_cron_trigger(trigger_cron)
 
-            try:
-                trigger = create_cron_trigger(st["sign_at"])
-                if st.get("execution_mode") == "range" and st.get("range_start"):
-                    trigger = create_cron_trigger(st["range_start"])
-
-                if job_id in existing_ids:
-                    scheduler.reschedule_job(job_id, trigger=trigger)
-                else:
-                    # 使用新的 job wrapper
+                    # 使用新的 job wrapper（replace_existing 会同时更新 trigger 与 args）
                     scheduler.add_job(
                         _job_run_sign_task,
                         trigger=trigger,
                         id=job_id,
-                        args=[account_name, task_name],
+                        args=[account_name, task_name, i, daily_times],
                         replace_existing=True,
                     )
-            except Exception as e:
-                logger.error("Error scheduling sign task %s: %s", task_name, e)
+                except Exception as e:
+                    logger.error("Error scheduling sign task %s: %s", task_name, e)
 
         # remove obsolete jobs
         for job_id in existing_ids - desired_ids:
@@ -288,34 +321,42 @@ def shutdown_scheduler() -> None:
 
 
 def add_or_update_sign_task_job(
-    account_name: str, task_name: str, cron_expression: str, enabled: bool = True
+    account_name: str,
+    task_name: str,
+    cron_expression: str,
+    enabled: bool = True,
+    daily_times: int = 1,
+    execution_mode: str = "fixed",
 ) -> None:
     """动态添加或更新签到任务 Job"""
     global scheduler
     if not scheduler:
         return
 
-    job_id = f"sign-{account_name}-{task_name}"
-
     if not enabled:
         remove_sign_task_job(account_name, task_name)
         return
 
-    try:
-        cron = cron_expression
-        trigger = create_cron_trigger(cron)
+    daily_times = _normalize_daily_times(daily_times)
+    for i in range(daily_times):
+        job_id = f"sign-{account_name}-{task_name}#{i}"
+        try:
+            cron = cron_expression
+            if execution_mode != "range" and daily_times > 1:
+                cron = _clock_offset_cron(cron_expression, i, daily_times)
+            trigger = create_cron_trigger(cron)
 
-        # 总是使用 replace_existing=True 来覆盖旧的
-        scheduler.add_job(
-            _job_run_sign_task,
-            trigger=trigger,
-            id=job_id,
-            args=[account_name, task_name],
-            replace_existing=True,
-        )
-        logger.info("Scheduler: 已添加/更新任务 %s -> %s", job_id, cron)
-    except Exception as e:
-        logger.error("Scheduler: 添加任务 %s 失败: %s", job_id, e)
+            # 总是使用 replace_existing=True 来覆盖旧的
+            scheduler.add_job(
+                _job_run_sign_task,
+                trigger=trigger,
+                id=job_id,
+                args=[account_name, task_name, i, daily_times],
+                replace_existing=True,
+            )
+            logger.info("Scheduler: 已添加/更新任务 %s -> %s", job_id, cron)
+        except Exception as e:
+            logger.error("Scheduler: 添加任务 %s 失败: %s", job_id, e)
 
 
 def remove_sign_task_job(account_name: str, task_name: str) -> None:
@@ -324,10 +365,11 @@ def remove_sign_task_job(account_name: str, task_name: str) -> None:
     if not scheduler:
         return
 
-    job_id = f"sign-{account_name}-{task_name}"
-    try:
-        if scheduler.get_job(job_id):
-            scheduler.remove_job(job_id)
-            logger.info("Scheduler: 已移除任务 %s", job_id)
-    except Exception as e:
-        logger.error("Scheduler: 移除任务 %s 失败: %s", job_id, e)
+    prefix = f"sign-{account_name}-{task_name}"
+    for job in scheduler.get_jobs():
+        if job.id == prefix or job.id.startswith(prefix + "#"):
+            try:
+                scheduler.remove_job(job.id)
+                logger.info("Scheduler: 已移除任务 %s", job.id)
+            except Exception as e:
+                logger.error("Scheduler: 移除任务 %s 失败: %s", job.id, e)

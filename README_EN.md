@@ -23,6 +23,8 @@ TG-SignPulse is a Telegram automation panel. Manage multiple accounts, configure
 - **Multi-account management**: phone-code or QR-code login, per-account proxy support
 - **8 action types**: Send Text, Send Dice, Click Button, AI Vision → Click Button, AI Vision → Send Text, AI Calculate → Send Text, AI Calculate → Click Button, Keyword Monitor
 - **Two scheduling modes**: fixed CRON time or randomized execution within a time window
+- **Multiple daily check-ins**: configure 1-5 executions per day (fixed times are
+  spread across the day; range windows are split into segments)
 - **Topic check-ins**: send and filter replies by specific Thread/Topic in Telegram forum groups
 - **Notifications**: task failures, invalid sessions, and login alerts; keyword matches support Telegram Bot, Bark, or a custom URL
 - **Real-time logs**: WebSocket live log streaming, history auto-retained for 3 days
@@ -34,7 +36,7 @@ TG-SignPulse is a Telegram automation panel. Manage multiple accounts, configure
 | Area | Capability |
 | --- | --- |
 | Account management | Multi-account login (phone/QR), per-account proxy, status checks, re-login, TOTP 2FA |
-| Task workflows | Fixed CRON / random-range schedules, 8 action types, action interval, auto-delete messages |
+| Task workflows | Fixed CRON / random-range schedules, daily sign-ins (1-5), 8 action types, action interval, auto-delete messages |
 | Topic support | Send and filter replies by Telegram group `Thread ID` |
 | Keyword monitoring | Contains / regex matching, push notification or continue the action sequence on match |
 | Notifications | Global: task failure / invalid session / login; keyword match: Telegram Bot / Bark / custom URL |
@@ -168,6 +170,8 @@ tests/        unit tests
 
 ### 2026-08-09
 
+- **Daily sign-in count**: tasks can run 1-5 times per day; fixed times are spread
+  evenly across the day and range windows execute in randomized segments
 - **Modernization**: FastAPI `lifespan`, unified health checks, vendored
   `backend/vendor` JWT/TOTP modules, direct bcrypt, structured scheduler logs,
   configurable static directory

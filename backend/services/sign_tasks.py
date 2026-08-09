@@ -647,6 +647,7 @@ class SignTaskService:
         chats: List[Dict[str, Any]],
         random_seconds: int,
         sign_interval: int,
+        daily_times: int = 1,
         enabled: bool = True,
         last_run: Optional[Dict[str, Any]] = None,
         execution_mode: str = "fixed",
@@ -668,6 +669,7 @@ class SignTaskService:
             "sign_at": sign_at,
             "random_seconds": random_seconds,
             "sign_interval": sign_interval,
+            "daily_times": daily_times,
             "chats": chats,
             "enabled": enabled,
             "last_run": last_run,
@@ -2257,6 +2259,7 @@ class SignTaskService:
                 chats=config.get("chats", []),
                 random_seconds=config.get("random_seconds", 0),
                 sign_interval=config.get("sign_interval", 1),
+                daily_times=config.get("daily_times", 1),
                 enabled=True,
                 last_run=last_run,
                 execution_mode=config.get("execution_mode", "fixed"),
@@ -2297,6 +2300,7 @@ class SignTaskService:
         chats: List[Dict[str, Any]],
         random_seconds: int = 0,
         sign_interval: Optional[int] = None,
+        daily_times: int = 1,
         account_name: str = "",
         account_names: Optional[List[str]] = None,
         execution_mode: str = "fixed",
@@ -2327,6 +2331,11 @@ class SignTaskService:
         if sign_interval is None:
             sign_interval = 1
 
+        try:
+            daily_times = max(1, min(int(daily_times), 5))
+        except (TypeError, ValueError):
+            daily_times = 1
+
         task_group_id = uuid.uuid4().hex if len(target_accounts) > 1 else ""
         should_schedule = execution_mode != "listen"
         trigger_cron = range_start if execution_mode == "range" else sign_at
@@ -2346,6 +2355,7 @@ class SignTaskService:
                 "sign_at": sign_at,
                 "random_seconds": random_seconds,
                 "sign_interval": sign_interval,
+                "daily_times": daily_times,
                 "chats": chats,
                 "execution_mode": execution_mode,
                 "range_start": range_start,
@@ -2371,6 +2381,8 @@ class SignTaskService:
                         task_name,
                         trigger_cron,
                         enabled=True,
+                        daily_times=daily_times,
+                        execution_mode=execution_mode,
                     )
                 else:
                     remove_sign_task_job(current_account, task_name)
@@ -2394,6 +2406,7 @@ class SignTaskService:
         chats: Optional[List[Dict[str, Any]]] = None,
         random_seconds: Optional[int] = None,
         sign_interval: Optional[int] = None,
+        daily_times: Optional[int] = None,
         account_name: Optional[str] = None,
         account_names: Optional[List[str]] = None,
         execution_mode: Optional[str] = None,
@@ -2453,6 +2466,15 @@ class SignTaskService:
             if sign_interval is not None
             else int(existing["sign_interval"])
         )
+        next_daily_times = (
+            daily_times
+            if daily_times is not None
+            else int(existing.get("daily_times", 1))
+        )
+        try:
+            next_daily_times = max(1, min(int(next_daily_times), 5))
+        except (TypeError, ValueError):
+            next_daily_times = 1
         next_chats = chats if chats is not None else existing["chats"]
         next_execution_mode = (
             execution_mode
@@ -2505,6 +2527,7 @@ class SignTaskService:
                 "sign_at": next_sign_at,
                 "random_seconds": next_random_seconds,
                 "sign_interval": next_sign_interval,
+                "daily_times": next_daily_times,
                 "chats": next_chats,
                 "execution_mode": next_execution_mode,
                 "range_start": next_range_start,
@@ -2532,6 +2555,8 @@ class SignTaskService:
                     task_name,
                     next_range_start if next_execution_mode == "range" else next_sign_at,
                     enabled=True,
+                    daily_times=next_daily_times,
+                    execution_mode=next_execution_mode,
                 )
             else:
                 remove_sign_task_job(current_account, task_name)
