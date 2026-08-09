@@ -3,14 +3,12 @@ from __future__ import annotations
 import io
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-import pyotp
 from backend.core.auth import (
     create_access_token,
     get_current_user,
@@ -21,7 +19,8 @@ from backend.core.config import get_settings
 from backend.core.database import get_db
 from backend.core.security import hash_password, verify_password
 from backend.models.user import User
-from jose import JWTError, jwt
+from backend.vendor import pyotp
+from backend.vendor.jose import JWTError, jwt
 
 try:
     import qrcode
@@ -47,7 +46,7 @@ class PendingTOTPSecret:
 _pending_totp_secrets: dict[int, PendingTOTPSecret] = {}
 
 
-def _cleanup_expired_pending_totp_secrets(now: Optional[float] = None) -> None:
+def _cleanup_expired_pending_totp_secrets(now: float | None = None) -> None:
     current = time.monotonic() if now is None else now
     expired_user_ids = [
         user_id
@@ -66,7 +65,7 @@ def _set_pending_totp_secret(user_id: int, secret: str) -> None:
     )
 
 
-def get_pending_totp_secret(user_id: int) -> Optional[str]:
+def get_pending_totp_secret(user_id: int) -> str | None:
     _cleanup_expired_pending_totp_secrets()
     entry = _pending_totp_secrets.get(user_id)
     if entry is None:
@@ -96,7 +95,7 @@ class ChangeUsernameRequest(BaseModel):
 class ChangeUsernameResponse(BaseModel):
     success: bool
     message: str
-    access_token: Optional[str] = None
+    access_token: str | None = None
 
 
 class EnableTOTPRequest(BaseModel):
@@ -119,7 +118,7 @@ class DisableTOTPResponse(BaseModel):
 
 class TOTPStatusResponse(BaseModel):
     enabled: bool
-    secret: Optional[str] = None
+    secret: str | None = None
 
 
 @router.put("/password", response_model=ChangePasswordResponse)
@@ -211,8 +210,8 @@ def setup_totp(current_user: User = Depends(get_current_user)):
 
 @router.get("/totp/qrcode")
 def get_totp_qrcode(
-    token: Optional[str] = None,
-    current_user: Optional[User] = Depends(get_current_user_optional),
+    token: str | None = None,
+    current_user: User | None = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
     settings = get_settings()

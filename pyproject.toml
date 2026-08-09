@@ -29,11 +29,8 @@ dependencies = [
     "uvicorn[standard]",
     "sqlalchemy",
     "apscheduler",
-    "python-jose[cryptography]",
     "python-multipart",
-    "pyotp",
-    "passlib[bcrypt]",
-    "bcrypt",
+    "bcrypt>=4.0",
     "qrcode[pil]",
 ]
 

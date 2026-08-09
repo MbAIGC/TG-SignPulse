@@ -4,8 +4,9 @@ import base64
 import hashlib
 import hmac
 import json
+from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any
 
 
 class JWTError(Exception):

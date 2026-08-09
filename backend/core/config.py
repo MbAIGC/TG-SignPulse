@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 import secrets
+from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
-from typing import Mapping, Optional
 
 from pydantic import BaseModel, Field
 
@@ -42,8 +42,8 @@ def _merged_env() -> dict[str, str]:
 def _read_env(
     env: Mapping[str, str],
     *names: str,
-    default: Optional[str] = None,
-) -> Optional[str]:
+    default: str | None = None,
+) -> str | None:
     for name in names:
         value = str(env.get(name, "")).strip()
         if value:
@@ -61,14 +61,14 @@ def _read_int_env(env: Mapping[str, str], *names: str, default: int) -> int:
         return default
 
 
-def _read_path_env(env: Mapping[str, str], *names: str) -> Optional[Path]:
+def _read_path_env(env: Mapping[str, str], *names: str) -> Path | None:
     raw = _read_env(env, *names)
     if raw is None:
         return None
     return Path(raw).expanduser()
 
 
-def get_default_secret_key(env: Optional[Mapping[str, str]] = None) -> str:
+def get_default_secret_key(env: Mapping[str, str] | None = None) -> str:
     env_map = env or os.environ
     env_secret = _read_env(env_map, "APP_SECRET_KEY")
     if env_secret:
@@ -99,30 +99,36 @@ def get_default_secret_key(env: Optional[Mapping[str, str]] = None) -> str:
 class Settings(BaseModel):
     app_name: str = "tg-signer-panel"
     host: str = "127.0.0.1"
-    port: int = 3000
+    port: int = 8080
     cors_allow_origins_raw: str = (
-        "http://127.0.0.1:3000,http://localhost:3000"
+        "http://127.0.0.1:5173,http://localhost:5173,"
+        "http://127.0.0.1:8080,http://localhost:8080"
     )
     secret_key: str = Field(default_factory=get_default_secret_key)
     access_token_expire_hours: int = 12
     timezone: str = "Asia/Hong_Kong"
+    frontend_dev_url: str = "http://127.0.0.1:5173"
     data_dir: Path = Field(default_factory=get_initial_data_dir)
-    db_path: Optional[Path] = None
-    signer_workdir: Optional[Path] = None
-    session_dir: Optional[Path] = None
-    logs_dir: Optional[Path] = None
+    db_path: Path | None = None
+    signer_workdir: Path | None = None
+    session_dir: Path | None = None
+    logs_dir: Path | None = None
+    web_dir: Path | None = None
 
     @classmethod
-    def from_environment(cls) -> "Settings":
+    def from_environment(cls) -> Settings:
         env = _merged_env()
         return cls(
             app_name=_read_env(env, "APP_APP_NAME", "APP_NAME", default="tg-signer-panel"),
             host=_read_env(env, "APP_HOST", default="127.0.0.1"),
-            port=_read_int_env(env, "APP_PORT", default=3000),
+            port=_read_int_env(env, "APP_PORT", "PORT", default=8080),
             cors_allow_origins_raw=_read_env(
                 env,
                 "APP_CORS_ALLOW_ORIGINS",
-                default="http://127.0.0.1:3000,http://localhost:3000",
+                default=(
+                    "http://127.0.0.1:5173,http://localhost:5173,"
+                    "http://127.0.0.1:8080,http://localhost:8080"
+                ),
             ),
             secret_key=get_default_secret_key(env),
             access_token_expire_hours=_read_int_env(
@@ -131,11 +137,17 @@ class Settings(BaseModel):
                 default=12,
             ),
             timezone=_read_env(env, "TZ", "APP_TIMEZONE", default="Asia/Hong_Kong"),
+            frontend_dev_url=_read_env(
+                env,
+                "FRONTEND_DEV_SERVER_URL",
+                default="http://127.0.0.1:5173",
+            ),
             data_dir=_read_path_env(env, "APP_DATA_DIR") or get_initial_data_dir(),
             db_path=_read_path_env(env, "APP_DB_PATH"),
             signer_workdir=_read_path_env(env, "APP_SIGNER_WORKDIR"),
             session_dir=_read_path_env(env, "APP_SESSION_DIR"),
             logs_dir=_read_path_env(env, "APP_LOGS_DIR"),
+            web_dir=_read_path_env(env, "APP_WEB_DIR"),
         )
 
     @property
@@ -159,6 +171,12 @@ class Settings(BaseModel):
             return self.data_dir
         return get_writable_base_dir()
 
+    def resolve_web_dir(self) -> Path:
+        if self.web_dir is not None:
+            return self.web_dir
+        # 默认指向前端构建产物: <repo>/frontend/dist
+        return Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
     @property
     def cors_allow_origins(self) -> list[str]:
         origins = [
@@ -166,9 +184,9 @@ class Settings(BaseModel):
             for item in str(self.cors_allow_origins_raw or "").split(",")
             if item.strip()
         ]
-        return origins or ["http://127.0.0.1:3000", "http://localhost:3000"]
+        return origins or ["http://127.0.0.1:5173", "http://localhost:5173"]
 
 
-@lru_cache()
+@lru_cache
 def get_settings() -> Settings:
     return Settings.from_environment()

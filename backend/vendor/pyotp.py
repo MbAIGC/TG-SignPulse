@@ -32,7 +32,7 @@ class TOTP:
         padded = self.secret + "=" * ((8 - len(self.secret) % 8) % 8)
         return base64.b32decode(padded, casefold=True)
 
-    def at(self, for_time: int | float) -> str:
+    def at(self, for_time: float) -> str:
         counter = int(float(for_time) // self.interval)
         counter_bytes = counter.to_bytes(8, "big")
         digest = hmac.new(
@@ -51,7 +51,7 @@ class TOTP:
     def verify(
         self,
         otp: str,
-        for_time: int | float | None = None,
+        for_time: float | None = None,
         valid_window: int = 0,
     ) -> bool:
         code = str(otp or "").strip().replace(" ", "")

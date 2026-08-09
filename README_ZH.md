@@ -61,6 +61,98 @@ TG-SignPulse 是一个 **AI Vibe Coding 技术学习项目**，用于探索和�
 
 ---
 
+## 本地运行
+
+环境要求：Python >= 3.10、Node.js >= 18。
+
+```bash
+# 1. 后端
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+cp .env.example .env  # 按需设置 APP_SECRET_KEY / APP_DATA_DIR
+uvicorn backend.main:app --host 127.0.0.1 --port 8080
+
+# 2. 前端（另开一个终端）
+cd frontend
+npm install
+npm run dev          # http://127.0.0.1:5173，/api 代理到 :8080
+
+# 生产构建（产物由后端从 frontend/dist 托管）
+npm run build
+```
+
+运行测试：
+
+```bash
+pip install pytest pytest-asyncio
+pytest tests -q
+```
+
+注意事项：
+
+- 首次启动会自动创建 `admin` 账号。可预先设置 `ADMIN_PASSWORD`，否则初始密码
+  会写入 `<APP_DATA_DIR>/.admin_bootstrap_password`，请及时修改。
+- 若后端在容器环境中启动卡住（uvloop 不兼容），请用 `--loop asyncio` 启动 uvicorn。
+- `build` 脚本设置了 `NODE_OPTIONS=--experimental-global-webcrypto`，保证 PWA/
+  workbox 构建在 Node 18 与 Node 20+ 下都能工作。
+
+## Docker / Docker Compose 部署
+
+仓库自带多阶段 [Dockerfile](Dockerfile) 与 [docker-compose.yml](docker-compose.yml)。
+GitHub Actions workflow（[.github/workflows/docker-build-push.yml](.github/workflows/docker-build-push.yml)）
+会自动构建镜像并推送到 GHCR：
+
+- 推送到 `main` 分支 → `ghcr.io/<owner>/tg-signpulse:latest`
+- 推送 `v1.2.3` 之类的 tag → `ghcr.io/<owner>/tg-signpulse:1.2.3` 与 `:v1.2.3`
+- 也可在 Actions 页面手动触发（workflow_dispatch）
+
+当前镜像仅构建 `linux/amd64` 架构。
+
+使用 Docker Compose 部署：
+
+```yaml
+services:
+  app:
+    image: ghcr.io/mbaigc/tg-signpulse:latest
+    container_name: tg-signpulse
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      - TZ=Asia/Shanghai
+      - APP_SECRET_KEY=your_secret_key
+```
+
+```bash
+docker compose up -d
+```
+
+首次启动会自动创建 `admin` 账号：可在环境变量中设置 `ADMIN_PASSWORD`，或读取
+`./data/.admin_bootstrap_password`（即 `./data` 卷内的初始密码）并在登录后修改。
+容器内置了基于 `/healthz` 的健康检查。
+
+## 近期优化
+
+- 将 FastAPI 废弃的 `@app.on_event` 启动/关闭逻辑迁移为 `lifespan`；
+  合并重复的 `/health`、`/healthz` 接口。
+- 把仓库根目录的 `jose` / `pyotp` 影子包迁移为显式的 `backend.vendor` 模块，
+  并移除 `python-jose`、`pyotp` 依赖，避免遮蔽真实三方包。
+- 用 `bcrypt` 直接替换停止维护的 `passlib`（旧 `$2b$` 哈希仍然可用）。
+- 调度器日志由 `print` 改为结构化 `logging`。
+- 前端静态目录可配置（`APP_WEB_DIR`，默认 `frontend/dist`），移除过时的
+  Next.js `/_next` 挂载。
+- 端口/配置对齐：后端默认 8080、Vite 开发服务器 5173，CORS 与开发重定向默认值
+  保持一致。
+- 前端工具链兼容 Node 18：Vite 6.x、`@vitejs/plugin-vue` 5.x、`vue-router` 4.x、
+  Tailwind 4.1.x（原锁定 Vite 8 / Vue Router 5 要求 Node 20.19+）。
+- 新增单元测试：密码哈希、JWT、TOTP、配置。
+- 新增 Docker 打包（多阶段构建，前端产物由后端托管）与 GHCR 推送 workflow，
+  与 docker-compose 部署方式保持一致。
+
+---
+
 ## 免责声明
 
 - 本项目仅用于 AI 编程技术学习与交流，不鼓励也不支持任何自动化滥用行为

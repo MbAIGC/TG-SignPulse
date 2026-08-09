@@ -1,0 +1,20 @@
+services:
+  app:
+    image: ghcr.io/mbaigc/tg-signpulse:latest
+    container_name: tg-signpulse
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      - TZ=Asia/Shanghai
+      - APP_SECRET_KEY=your_secret_key
+      # 可选：首次启动时预设管理员密码（不设置则密码写入 /data/.admin_bootstrap_password）
+      # - ADMIN_PASSWORD=change_me
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3

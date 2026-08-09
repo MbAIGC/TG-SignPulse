@@ -61,6 +61,105 @@ This project can serve as a reference for:
 
 ---
 
+## Local Development
+
+Requirements: Python >= 3.10, Node.js >= 18.
+
+```bash
+# 1. Backend
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+cp .env.example .env  # set APP_SECRET_KEY / APP_DATA_DIR as needed
+uvicorn backend.main:app --host 127.0.0.1 --port 8080
+
+# 2. Frontend (separate terminal)
+cd frontend
+npm install
+npm run dev          # http://127.0.0.1:5173, proxies /api to :8080
+
+# Production build (served by the backend from frontend/dist)
+npm run build
+```
+
+Run tests:
+
+```bash
+pip install pytest pytest-asyncio
+pytest tests -q
+```
+
+Notes:
+
+- On first startup the backend creates an `admin` account. Set `ADMIN_PASSWORD`
+  beforehand or read the generated bootstrap password from
+  `<APP_DATA_DIR>/.admin_bootstrap_password`.
+- If the backend hangs at startup in a containerized environment (uvloop
+  incompatibility), start uvicorn with `--loop asyncio`.
+- The `build` script sets `NODE_OPTIONS=--experimental-global-webcrypto` so the
+  PWA/workbox step works on Node 18 as well as Node 20+.
+
+## Docker / Docker Compose
+
+The repo ships a multi-stage [Dockerfile](Dockerfile) and a
+[docker-compose.yml](docker-compose.yml). A GitHub Actions workflow
+([.github/workflows/docker-build-push.yml](.github/workflows/docker-build-push.yml))
+builds the image and pushes it to GHCR automatically:
+
+- on every push to `main` → `ghcr.io/<owner>/tg-signpulse:latest`
+- on tags like `v1.2.3` → `ghcr.io/<owner>/tg-signpulse:1.2.3` and `:v1.2.3`
+- manually via the `workflow_dispatch` trigger
+
+The image currently targets `linux/amd64`.
+
+Deploy with Docker Compose:
+
+```yaml
+services:
+  app:
+    image: ghcr.io/mbaigc/tg-signpulse:latest
+    container_name: tg-signpulse
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      - TZ=Asia/Shanghai
+      - APP_SECRET_KEY=your_secret_key
+```
+
+```bash
+docker compose up -d
+```
+
+On first startup an `admin` account is created. Either set `ADMIN_PASSWORD` in
+the environment, or read the generated bootstrap password from
+`./data/.admin_bootstrap_password` (the `./data` volume) and change it after
+logging in. The container exposes a healthcheck on `/healthz`.
+
+## Recent Optimizations
+
+- Migrated FastAPI startup/shutdown from deprecated `@app.on_event` to a
+  `lifespan` context manager; deduplicated `/health` and `/healthz`.
+- Replaced the repo-root `jose` / `pyotp` shadow packages with explicit
+  `backend.vendor` modules and updated imports; removed the `python-jose` and
+  `pyotp` dependencies.
+- Replaced unmaintained `passlib` with direct `bcrypt` usage (existing
+  `$2b$` hashes remain valid).
+- Replaced `print()`-based scheduler logging with structured `logging`.
+- Made the frontend static directory configurable (`APP_WEB_DIR`, default
+  `frontend/dist`); removed the obsolete Next.js `/_next` mount.
+- Aligned ports/config: backend defaults to 8080, Vite dev server to 5173,
+  and the CORS/dev-redirect defaults match.
+- Frontend toolchain now builds on Node 18: Vite 6.x, `@vitejs/plugin-vue` 5.x,
+  `vue-router` 4.x, Tailwind 4.1.x (the previously pinned Vite 8 / Vue Router 5
+  require Node 20.19+).
+- Added unit tests for password hashing, JWT, TOTP, and settings.
+- Added Docker packaging (multi-stage build, `frontend/dist` served by the
+  backend) and a GHCR push workflow matching the docker-compose deployment.
+
+---
+
 ## Disclaimer
 
 - This project is intended solely for AI programming technique learning and exchange; it does not encourage or support any form of automation abuse
