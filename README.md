@@ -10,6 +10,8 @@
 
 ---
 
+> 📝 维护上下文、优化历史与已知问题请见 [PROJECT_NOTES.md](PROJECT_NOTES.md)。
+
 ## About
 
 TG-SignPulse is an **AI Vibe Coding learning project** created to explore and practice the integration of the following technology stacks:

@@ -43,6 +43,7 @@ from backend.scheduler import (
 )
 from backend.services.users import ensure_admin
 from backend.utils.paths import ensure_data_dirs
+from tg_signer import __version__ as tg_signer_version
 from tg_signer.async_utils import create_logged_task
 
 
@@ -117,7 +118,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.1.0",
+    version=tg_signer_version,
     lifespan=lifespan,
 )
 app.state.ready = False
@@ -234,4 +235,3 @@ def _pre_export_session_strings() -> None:
 
     if exported:
         logger.info(f"Pre-exported {exported} session strings for in-memory task execution")
-
