@@ -139,7 +139,7 @@ Notes:
 
 ## Local Development
 
-- Python `>=3.10,<3.14` (3.11 / 3.12 recommended); Node.js `>=18`
+- Python `>=3.10,<3.14` (3.11 / 3.12 recommended); Node.js `^20.19 || >=22.12`
 - Convenience commands (see [Makefile](Makefile)):
 
 ```bash
@@ -171,7 +171,8 @@ tests/        unit tests
 - **Modernization**: FastAPI `lifespan`, unified health checks, vendored
   `backend/vendor` JWT/TOTP modules, direct bcrypt, structured scheduler logs,
   configurable static directory
-- **Frontend toolchain**: Vite 6 / Vue Router 4 / Tailwind 4.1, builds on Node 18 and 20+
+- **Dependency upgrades**: Vite 8 / Vue Router 5 / Tailwind 4.3 / `@lucide/vue` /
+  pydantic v2 (requires Node `^20.19 || >=22.12`)
 - **Docker + GHCR CI**: multi-stage image, auto-push to `ghcr.io/mbaigc/tg-signpulse`
 - **Session-string fix**: `.session` exports now use the kurigram-compatible
   format; stale legacy caches are rebuilt automatically

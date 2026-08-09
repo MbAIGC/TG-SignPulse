@@ -8,7 +8,7 @@
 - 类型：Telegram 自动化签到面板（Web 管理 + 定时任务 + 关键词监听）
 - 技术栈：
   - 后端：Python 3.10-3.13、FastAPI、SQLAlchemy 2 + SQLite、APScheduler、kurigram 2.2.7（pyrogram fork）
-  - 前端：Vue 3、Vue Router 4、Pinia、Tailwind CSS 4、Vite 6、PWA
+  - 前端：Vue 3、Vue Router 5、Pinia、Tailwind CSS 4、Vite 8、PWA
   - 认证：JWT（HS256，自研 vendored 实现）+ TOTP 2FA + bcrypt
 - 原仓库（已归档）：https://github.com/akasls/TG-SignPulse
 - 当前维护仓库：https://github.com/MbAIGC/TG-SignPulse
@@ -42,12 +42,14 @@ docker compose logs -f        # 查看日志
 - 静态目录可配置（`APP_WEB_DIR`，默认 `frontend/dist`）；删除 Next.js `/_next` 死代码
 - 端口对齐：后端默认 8080、Vite 5173
 
-### 前端工具链（Node 18 兼容）
+### 前端工具链（Node 18 兼容，后续已撤销）
 
 - Vite 8 → 6.x；`@vitejs/plugin-vue` 6 → 5.x；`vue-router` 5 → 4.x；
   Tailwind 4.3 → 4.1.18（oxide 原生绑定支持 Node 18）
 - `build` 脚本加 `cross-env NODE_OPTIONS=--experimental-global-webcrypto`
   （workbox/serialize-javascript 在 Node 18 下需要全局 crypto）
+
+> ⚠️ 该兼容方案已被 2026-08-09 的“依赖升级到最新”撤销（见下方第 5 条）。
 
 ### Docker + GHCR CI
 
@@ -77,6 +79,14 @@ docker compose logs -f        # 查看日志
      （`README.md`），英文同步为 `README_EN.md`，删除 `README_ZH.md`；
      结构参照 fork [loochenx/TG-SignPulse](https://github.com/loochenx/TG-SignPulse)，
      署名 Codex + Deepseek
+5. **依赖升级到最新**（2026-08-09）
+   - 前端：Vite 8.2、`@vitejs/plugin-vue` 6.0、`vue-router` 5.2、
+     Tailwind 4.3.3、`vue-tsc` 3.3、TypeScript 6.0（未上 7.x，Go 版兼容性未就绪）；
+     `lucide-vue-next` → `@lucide/vue`（GitHub 品牌图标被 lucide 移除，
+     改用 `GitBranch`）；要求 Node `^20.19 || >=22.12`，Docker 构建镜像
+     改为 `node:22-alpine`，删除 cross-env crypto 兼容
+   - 后端：`pydantic<2` → `pydantic>=2,<3`（实测 2.13.4），代码原有
+     v1/v2 双兼容层直接生效，21 个测试与启动冒烟全部通过
 
 ## 4. 已知问题 / 环境注意
 
@@ -84,8 +94,8 @@ docker compose logs -f        # 查看日志
   本地调试用 `uvicorn backend.main:app --loop asyncio`
 - **Starlette TestClient 在本沙箱不可用**：anyio blocking portal 会死锁，
   接口测试需启动真实 uvicorn + httpx（用 `--loop asyncio`）
-- **lucide-vue-next 已废弃**（官方建议 `@lucide/vue`），目前仍可用，迁移待办
-- **pydantic 仍锁定 v1**（`pydantic<2`），升级 v2 是大改动，暂缓
+- ~~lucide-vue-next 已废弃~~ → 已迁移 `@lucide/vue`
+- ~~pydantic 锁定 v1~~ → 已升级 v2（2.13.4）
 - **镜像仅 amd64**：如需 arm64，workflow 的 `platforms` 加 `linux/arm64`
   并验证依赖 wheel（kurigram 纯 Python，uvloop/httptools/pillow/bcrypt 均有 arm64 wheel）
 - **根目录 vitepress 残留已清理**：原 `package.json`/`package-lock.json`
@@ -109,8 +119,8 @@ ruff check backend tests
 
 ## 6. 待办 / 下一步优化候选
 
-- [ ] 迁移 `lucide-vue-next` → `@lucide/vue`（前端图标包废弃警告）
-- [ ] pydantic v1 → v2 升级评估
+- [x] 迁移 `lucide-vue-next` → `@lucide/vue`
+- [x] pydantic v1 → v2（2.13.4）
 - [ ] CI 增加 `linux/arm64` 多架构构建
 - [ ] 补充服务层/接口层测试（沙箱内 TestClient 受限，可用真实 uvicorn + httpx）
 - [ ] 关键词监听（keyword_monitor）代码量大（1700+ 行），建议后续专项审计

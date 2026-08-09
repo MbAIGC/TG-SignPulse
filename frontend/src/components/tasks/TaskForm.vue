@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, computed } from 'vue'
-import { Plus, Trash2, ArrowUp, ArrowDown, RefreshCw } from 'lucide-vue-next'
+import { Plus, Trash2, ArrowUp, ArrowDown, RefreshCw } from '@lucide/vue'
 import { listAccounts, getAccountChats, searchAccountChats } from '../../lib/api'
 import CustomSelect from '../CustomSelect.vue'
 import MultiSelect from '../MultiSelect.vue'

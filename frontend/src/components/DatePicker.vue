@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { ChevronDown, ChevronLeft, ChevronRight, X } from 'lucide-vue-next'
+import { ChevronDown, ChevronLeft, ChevronRight, X } from '@lucide/vue'
 import { useI18n } from '../composables/useI18n'
 
 const { locale } = useI18n()

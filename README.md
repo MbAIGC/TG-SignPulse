@@ -139,7 +139,7 @@ touch /data/.probe && rm /data/.probe
 
 ## 本地开发
 
-- Python `>=3.10,<3.14`（推荐 3.11 / 3.12）；Node.js `>=18`
+- Python `>=3.10,<3.14`（推荐 3.11 / 3.12）；Node.js `^20.19 || >=22.12`
 - 常用命令（见 [Makefile](Makefile)）：
 
 ```bash
@@ -170,7 +170,8 @@ tests/        单元测试
 
 - **代码现代化**：FastAPI `lifespan`、健康检查统一、自研 `backend/vendor`
   JWT/TOTP 模块、bcrypt 直连、调度器日志规范化、静态目录可配置
-- **前端构建兼容**：Vite 6 / Vue Router 4 / Tailwind 4.1，Node 18 与 20+ 均可构建
+- **依赖升级到最新**：Vite 8 / Vue Router 5 / Tailwind 4.3 / `@lucide/vue` /
+  pydantic v2（要求 Node `^20.19 || >=22.12`）
 - **Docker + GHCR CI**：多阶段镜像、`ghcr.io/mbaigc/tg-signpulse` 自动推送
 - **修复会话字符串错误**：`.session` 导出改用 kurigram 兼容格式，
   旧坏缓存自动重建

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { LayoutDashboard, Users, Zap, Terminal, Settings, UserCircle, Github, Globe, Moon, Sun, Menu } from 'lucide-vue-next'
+import { LayoutDashboard, Users, Zap, Terminal, Settings, UserCircle, GitBranch, Globe, Moon, Sun, Menu } from '@lucide/vue'
 import { useTheme } from '../composables/useTheme'
 import { useI18n } from '../composables/useI18n'
 import UserProfileModal from '../components/settings/UserProfileModal.vue'
@@ -87,7 +87,7 @@ const handleNavClick = () => {
         </div>
         <div class="flex items-center gap-2 sm:gap-3">
           <button @click="openGithub" class="w-8 h-8 flex items-center justify-center text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-200 dark:hover:bg-gray-900 transition-colors rounded" title="GitHub">
-            <Github class="w-4 h-4" />
+            <GitBranch class="w-4 h-4" />
           </button>
           <button @click="toggleLanguage" class="w-8 h-8 flex items-center justify-center text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-200 dark:hover:bg-gray-900 transition-colors rounded" title="Change Language">
             <Globe class="w-4 h-4" />

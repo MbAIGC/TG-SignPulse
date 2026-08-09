@@ -19,11 +19,14 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 
 try:
-    from pydantic import BaseModel, Field, field_validator
+    from pydantic import BaseModel, ConfigDict, Field, field_validator
     validator = None
 except ImportError:  # pragma: no cover - pydantic v1 compatibility
     from pydantic import BaseModel, Field, validator
+    ConfigDict = None
     field_validator = None
+
+_PYDANTIC_V2 = hasattr(BaseModel, "model_validate")
 from sqlalchemy.orm import Session
 
 from backend.core.auth import get_current_user, verify_token
@@ -58,8 +61,11 @@ class ChatConfig(BaseModel):
     message_thread_id: Optional[int] = Field(None, description="Thread ID")
     source_account: Optional[str] = Field(None, description="Account used to look up this chat (for avatar)")
 
-    class Config:
-        extra = "allow"
+    if _PYDANTIC_V2 and ConfigDict is not None:
+        model_config = ConfigDict(extra="allow")
+    else:
+        class Config:
+            extra = "allow"
 
 
 class SignTaskCreate(BaseModel):

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Play, FileText, Edit2, Trash2, Plus, QrCode, Phone, Zap } from 'lucide-vue-next'
+import { Play, FileText, Edit2, Trash2, Plus, QrCode, Phone, Zap } from '@lucide/vue'
 import { listAccounts, deleteAccount, checkAccountsStatus } from '../lib/api'
 import { useI18n } from '../composables/useI18n'
 import AddAccountModal from '../components/accounts/AddAccountModal.vue'

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Github, Globe, Moon, Sun } from 'lucide-vue-next'
+import { GitBranch, Globe, Moon, Sun } from '@lucide/vue'
 import { login } from '../lib/api'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
@@ -120,7 +120,7 @@ const openGithub = () => {
       <!-- Footer icons -->
       <div class="flex items-center justify-center gap-3 mt-6 pt-4 border-t border-gray-200 dark:border-gray-800/60">
         <button @click="openGithub" class="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 transition-colors rounded" title="GitHub">
-          <Github class="w-4 h-4" />
+          <GitBranch class="w-4 h-4" />
         </button>
         <button @click="toggleLanguage" class="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 transition-colors rounded" :title="locale === 'zh' ? 'English' : '中文'">
           <Globe class="w-4 h-4" />

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
-import { Loader2, RefreshCw } from 'lucide-vue-next'
+import { Loader2, RefreshCw } from '@lucide/vue'
 import Modal from '../Modal.vue'
 import { getSignTaskHistory } from '../../lib/api'
 import { useI18n } from '../../composables/useI18n'

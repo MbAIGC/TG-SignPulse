@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { Play, FileText, Edit2, Trash2, Plus, Radio, Clock, Shuffle } from 'lucide-vue-next'
+import { Play, FileText, Edit2, Trash2, Plus, Radio, Clock, Shuffle } from '@lucide/vue'
 import { listSignTasks, deleteSignTask, startSignTaskRun, listAccounts } from '../lib/api' 
 import { useI18n } from '../composables/useI18n'
 import AddTaskModal from '../components/tasks/AddTaskModal.vue'
