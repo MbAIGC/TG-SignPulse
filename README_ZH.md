@@ -150,6 +150,10 @@ docker compose up -d
 - 新增单元测试：密码哈希、JWT、TOTP、配置。
 - 新增 Docker 打包（多阶段构建，前端产物由后端托管）与 GHCR 推送 workflow，
   与 docker-compose 部署方式保持一致。
+- 修复从 `.session` 文件导出会话字符串的问题：旧版 `"1"+base64` 格式无法被
+  kurigram 2.2.x 解码，会导致执行签到任务时报
+  "Invalid base64-encoded string" 错误。现在导出使用当前格式（含 api_id、
+  无版本前缀），并会自动重建旧的坏缓存。
 
 ---
 

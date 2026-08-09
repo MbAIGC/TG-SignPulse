@@ -157,6 +157,11 @@ logging in. The container exposes a healthcheck on `/healthz`.
 - Added unit tests for password hashing, JWT, TOTP, and settings.
 - Added Docker packaging (multi-stage build, `frontend/dist` served by the
   backend) and a GHCR push workflow matching the docker-compose deployment.
+- Fixed session-string export from `.session` files: the old `"1"+base64` v1
+  format cannot be decoded by kurigram 2.2.x, causing "Invalid base64-encoded
+  string" errors when running sign tasks. Exports now use the current format
+  (with `api_id`, no version prefix), and stale legacy caches are rebuilt
+  automatically.
 
 ---
 
