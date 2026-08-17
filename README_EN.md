@@ -168,6 +168,15 @@ tests/        unit tests
 
 ## Changelog
 
+### 2026-08-17
+
+- **"Client has not been started yet" fix**: background operations (account
+  deletion/re-login/status checks, keyword-monitor restarts, etc.) no longer
+  force-stop a Telegram client that a running task still holds.
+  `close_client_by_name` now respects reference counts (detaches from the cache
+  instead of killing), shared instances auto-reconnect on entry, and login
+  reconnects defensively
+
 ### 2026-08-09
 
 - **Daily sign-in count**: tasks can run 1-5 times per day; fixed times are spread
