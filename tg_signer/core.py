@@ -439,6 +439,14 @@ class Client(BaseClient):
                             except Exception:
                                 pass
                         raise e
+            elif not self.is_connected:
+                # 共享实例可能在外部被 stop（如 close_client_by_name 或网络断开），
+                # 重新连接以保证本次使用有效；失败则回滚引用并抛出。
+                try:
+                    await self.connect()
+                except Exception:
+                    _CLIENT_REFS[self.key] -= 1
+                    raise
             return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -584,6 +592,13 @@ async def close_client_by_name(name: str, workdir: Union[str, pathlib.Path] = ".
             # Try to acquire with timeout to avoid deadlocks if something is stuck
             await asyncio.wait_for(lock.acquire(), timeout=5.0)
             try:
+                refs = _CLIENT_REFS.get(key, 0)
+                if refs > 0:
+                    # 客户端仍被任务/监听使用：不要强制 stop，否则运行中的任务会报
+                    # "Client has not been started yet"。仅从缓存摘除，让新请求
+                    # 创建新实例，由最后一个持有者（__aexit__）负责真正 stop。
+                    _CLIENT_INSTANCES.pop(key, None)
+                    return
                 # Reset references to 0 to ensure proper cleanup
                 _CLIENT_REFS[key] = 0
             finally:
@@ -593,6 +608,10 @@ async def close_client_by_name(name: str, workdir: Union[str, pathlib.Path] = ".
             logger.warning(
                 f"Timeout waiting for lock on client {name}, proceeding with forceful cleanup"
             )
+            refs = _CLIENT_REFS.get(key, 0)
+            if refs > 0:
+                _CLIENT_INSTANCES.pop(key, None)
+                return
             _CLIENT_REFS[key] = 0
 
     client = _CLIENT_INSTANCES.get(key)
@@ -851,6 +870,9 @@ class BaseUserWorker(Generic[ConfigT]):
         self.log("正在连接账号会话（无需重新登录）...")
         app = self.app
         async with app:
+            if not app.is_connected:
+                # 共享实例可能被外部 stop 过，防御性重连
+                await app.connect()
             me = await app.get_me()
             me_name = getattr(me, "username", None) or getattr(me, "id", None)
             self.log(f"账号会话连接成功: @{me_name}")

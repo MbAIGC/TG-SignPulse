@@ -101,6 +101,18 @@ docker compose logs -f        # 查看日志
    - 涉及：`backend/scheduler`、`backend/services/sign_tasks.py`、
      `backend/api/routes/sign_tasks_v2.py`、前端 TaskForm/i18n；
      测试 `tests/test_scheduler.py`
+8. **修复 “Client has not been started yet”**
+   - 症状：调度/手动执行任务时报 `ConnectionError: Client has not been started yet`，
+     常出现在多个任务同账号并发、或 UI 操作（编辑任务/检测账号/重启监听）之后
+   - 原因：`close_client_by_name()` 会把 `_CLIENT_REFS` 强制归零并 `stop()` 共享
+     客户端；若任务正在 `async with client` 中执行，客户端被从底层 stop，
+     下一次 API 调用即报错；网络超时（Connection timed out）会加剧
+   - 修复（`tg_signer/core.py`）：
+     1. `close_client_by_name` 尊重引用计数：refs>0 时只从缓存摘除、不强杀，
+        由最后一个持有者 `__aexit__` 清理
+     2. `Client.__aenter__` 在 refs>1 且未连接时自动重连
+     3. `login()` 在 `get_me()` 前防御性重连
+   - 回归测试：`tests/test_client_lifecycle.py`
 
 ## 4. 已知问题 / 环境注意
 
