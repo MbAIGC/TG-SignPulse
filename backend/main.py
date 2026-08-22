@@ -129,6 +129,10 @@ app = FastAPI(
     title=settings.app_name,
     version=tg_signer_version,
     lifespan=lifespan,
+    # 生产环境禁用 Swagger UI / ReDoc / OpenAPI schema (docs_url=None)
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 app.state.ready = False
 
