@@ -560,8 +560,13 @@ async def test_login_loads_forum_topics_after_dialog_fetch(monkeypatch, signer_f
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "async_topic_parser",
+    [False, True],
+    ids=["sync-topic-parser", "async-topic-parser"],
+)
 async def test_client_get_forum_topics_handles_missing_top_message(
-    monkeypatch, signer_factory
+    monkeypatch, signer_factory, async_topic_parser
 ):
     import tg_signer._kurigram.methods as kurigram_methods
     import tg_signer.core as core
@@ -590,7 +595,7 @@ async def test_client_get_forum_topics_handles_missing_top_message(
             date=datetime(2026, 3, 8, tzinfo=timezone.utc),
         )
 
-    def fake_parse_topic(_client, topic, messages, _users, _chats):
+    def parse_topic(_client, topic, messages, _users, _chats):
         if topic == "topic-1":
             return SimpleNamespace(id=1, title="A", top_message=messages[10])
         if topic == "topic-1-duplicate":
@@ -598,6 +603,14 @@ async def test_client_get_forum_topics_handles_missing_top_message(
         if topic == "topic-2":
             return SimpleNamespace(id=2, title="B", top_message=None)
         return None
+
+    if async_topic_parser:
+
+        async def fake_parse_topic(*args):
+            return parse_topic(*args)
+
+    else:
+        fake_parse_topic = parse_topic
 
     monkeypatch.setattr(signer, "_call_telegram_api", direct_call)
     monkeypatch.setattr(signer.app, "resolve_peer", fake_resolve_peer)
