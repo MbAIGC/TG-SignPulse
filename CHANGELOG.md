@@ -2,12 +2,12 @@
 
 ## 版本变动日志
 
-### 0.9.0b2
+### 0.9.0
+- 新增 `list-folders` 和 `--from-folder`，支持从 Telegram 普通对话 Folder 加载手动添加的对话
+- 兼容 Kurigram 同步与异步论坛话题解析接口
 - 修复连续动作处理中已消费消息占位导致 `wait_for` 崩溃的问题
 - `根据图片选择选项` 动作支持图片与 InlineKeyboard 按钮分离的验证码场景
 - 将版本变动日志从 README 移至独立的 `CHANGELOG.md`
-
-### 0.9.0b1
 - 监控配置支持 `send_text_template`，可将正则捕获结果或消息文本渲染到自动回复内容中
 - 修复图片消息中的计算题无法识别 `caption` 的问题
 - `回复计算题` 动作在存在 InlineKeyboard 选项时，会将按钮选项传给大模型并点击匹配按钮
@@ -102,12 +102,12 @@
 
 ## Changelog
 
-### 0.9.0b2
+### 0.9.0
+- Add `list-folders` and `--from-folder` to load manually added chats from regular Telegram folders
+- Support both synchronous and asynchronous Kurigram forum topic parsers
 - Fix `wait_for` crashes caused by consumed message placeholders during multi-action flows
 - Support captcha flows where the image and InlineKeyboard buttons are sent as separate messages for `ChooseOptionByImageAction`
 - Move the changelog out of README files and into standalone `CHANGELOG.md`
-
-### 0.9.0b1
 - Add `send_text_template` support for monitor configs, allowing regex captures or message text to be rendered into automatic replies
 - Fix calculation questions in image messages not being detected from `caption`
 - When `ReplyByCalculationProblemAction` sees InlineKeyboard options, pass those options to the LLM and click the matching button
