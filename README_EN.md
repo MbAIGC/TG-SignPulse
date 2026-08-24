@@ -91,6 +91,7 @@ Commands:
   list                    List existing configurations
   list-members            List chat members (groups or channels; channels require
                           admin permissions)
+  list-folders            List regular Telegram chat folders
   list-sign-records       List the latest N check-in records
   list-topics             List group topic IDs (`message_thread_id`)
   list-schedule-messages  Show configured scheduled messages
@@ -121,6 +122,9 @@ Examples:
 tg-signer run
 tg-signer run my_sign  # Run the 'my_sign' task directly, without prompting
 tg-signer run-once my_sign  # Run the 'my_sign' task once directly
+tg-signer list-folders  # List regular Telegram folders and their explicit chat counts
+tg-signer login --from-folder Sign  # Log in and discover chats from the Sign folder
+tg-signer run --from-folder Sign my_sign  # Discover chats from Sign before running the task
 tg-signer list-sign-records linuxdo -n 5  # View the latest 5 check-in records for task linuxdo
 tg-signer migrate-sign-records  # Migrate check-in records under .signer/signs to SQLite
 tg-signer send-text 8671234001 /test  # Send '/test' to chat_id '8671234001'
@@ -163,6 +167,23 @@ Signer `chat_id` also supports integer IDs and `@`-prefixed usernames such as
 
 For forum-style groups, the login output also prints each topic's
 `message_thread_id`, which can be used directly with `--message-thread-id`.
+
+If a target chat is not in the recent list, create a regular Telegram folder and
+manually add the target chats. You can then load it by name or ID:
+
+```sh
+tg-signer list-folders
+tg-signer login --from-folder Sign
+# Use the ID when multiple folders have the same name
+tg-signer login --from-folder 2
+```
+
+`--from-folder` discovers chats from the folder and is also available on `run`,
+`run-once`, `multi-run`, `automation run`, and `monitor run`. When specified,
+all manually included or pinned chats in the folder are loaded and
+`--num-of-dialogs` is ignored. Folders whose membership is generated from
+dynamic rules such as contacts, bots, groups, or channels are not supported;
+use a regular folder containing only manually added chats.
 
 ### Time Zone
 

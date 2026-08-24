@@ -85,6 +85,7 @@ Commands:
   import                  导入配置，默认为从终端读取。
   list                    列出已有配置
   list-members            查询聊天（群或频道）的成员, 频道需要管理员权限
+  list-folders            列出 Telegram 普通对话 Folder
   list-sign-records       列出最近N条签到记录
   list-topics             列出群组话题ID（message_thread_id）
   list-schedule-messages  显示已配置的定时消息
@@ -112,6 +113,9 @@ Commands:
 tg-signer run
 tg-signer run my_sign  # 不询问，直接运行'my_sign'任务
 tg-signer run-once my_sign  # 直接运行一次'my_sign'任务
+tg-signer list-folders  # 列出 Telegram 普通 Folder 的 ID、名称和显式对话数量
+tg-signer login --from-folder Sign  # 登录账号并从 Sign Folder 发现对话
+tg-signer run --from-folder Sign my_sign  # 从 Sign Folder 发现对话后运行任务
 tg-signer list-sign-records linuxdo -n 5  # 查看任务 linuxdo 最近 5 条签到记录
 tg-signer migrate-sign-records  # 将.signer/signs 下的签到记录迁移到 SQLite
 tg-signer send-text 8671234001 /test  # 向chat_id为'8671234001'的聊天发送'/test'文本
@@ -161,6 +165,17 @@ tg-signer login
 根据提示输入手机号码和验证码进行登录并获取最近的聊天列表，确保你想要签到的聊天在列表内。
 签到任务里的`chat_id`同时支持整数ID和以`@`开头的username，例如`@neo`。
 对于论坛群组，登录输出中会额外打印每个话题的 `message_thread_id`，可直接用于 `--message-thread-id`。
+
+如果目标对话不在最近列表中，可以在 Telegram 新建一个普通 Folder，手动把目标对话加入其中，然后按名称或 ID 加载：
+
+```sh
+tg-signer list-folders
+tg-signer login --from-folder Sign
+# 名称重复时使用 ID
+tg-signer login --from-folder 2
+```
+
+`--from-folder` 表示“从 Folder 发现对话”，也适用于 `run`、`run-once`、`multi-run`、`automation run` 和 `monitor run`。指定后会加载 Folder 中所有手动加入或置顶的对话，`--num-of-dialogs` 不再生效。当前不支持按联系人、非联系人、机器人、群组或频道等动态规则生成成员的 Folder；请使用只包含手动添加对话的普通 Folder。
 
 ### 时区
 

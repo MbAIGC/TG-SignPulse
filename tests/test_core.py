@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import Folder, InlineKeyboardButton, InlineKeyboardMarkup
 
 from tg_signer.config import (
     ChooseOptionByImageAction,
@@ -53,6 +53,7 @@ def patch_client_methods(
     stop=None,
     get_me=None,
     get_dialogs=None,
+    get_folders=None,
     save_session_string=None,
 ):
     async def fake_start(self):
@@ -70,6 +71,9 @@ def patch_client_methods(
         for _ in ():
             yield
 
+    async def fake_get_folders(self):
+        return []
+
     async def fake_save_session_string(self):
         await asyncio.sleep(0)
 
@@ -77,6 +81,7 @@ def patch_client_methods(
     monkeypatch.setattr(core.Client, "stop", stop or fake_stop)
     monkeypatch.setattr(core.Client, "get_me", get_me or fake_get_me)
     monkeypatch.setattr(core.Client, "get_dialogs", get_dialogs or fake_get_dialogs)
+    monkeypatch.setattr(core.Client, "get_folders", get_folders or fake_get_folders)
     monkeypatch.setattr(
         core.Client,
         "save_session_string",
@@ -358,6 +363,110 @@ async def test_login_bootstrap_is_shared_between_concurrent_workers(
     assert calls["get_dialogs"] == 1
     assert calls["save_session_string"] == 1
     assert signer1.user.id == signer2.user.id == 123456
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("folder_selector", ["Sign", "7"])
+async def test_login_loads_explicit_folder_chats(
+    monkeypatch, signer_factory, folder_selector
+):
+    import tg_signer.core as core
+
+    chat_a = SimpleNamespace(
+        id=1001,
+        title="A",
+        type="private",
+        username="chat_a",
+        first_name="A",
+        last_name=None,
+    )
+    chat_b = SimpleNamespace(
+        id=1002,
+        title="B",
+        type="private",
+        username="chat_b",
+        first_name="B",
+        last_name=None,
+    )
+    folder = Folder(
+        id=7,
+        name="Sign",
+        pinned_chats=[chat_a, None],
+        included_chats=[None, chat_a, chat_b],
+        exclude_archived=True,
+    )
+    calls = {"get_dialogs": 0, "get_folders": 0}
+
+    async def fake_get_dialogs(self, limit):
+        del self, limit
+        calls["get_dialogs"] += 1
+        for _ in ():
+            yield
+
+    async def fake_get_folders(self):
+        del self
+        calls["get_folders"] += 1
+        return [folder]
+
+    patch_client_methods(
+        monkeypatch,
+        core,
+        get_dialogs=fake_get_dialogs,
+        get_folders=fake_get_folders,
+    )
+    outputs = collect_outputs(monkeypatch, core)
+    signer = signer_factory()
+
+    await signer.login(folder=folder_selector, print_chat=True)
+
+    latest_chats_file = signer.get_user_dir(signer.user) / "latest_chats.json"
+    latest_chats = json.loads(latest_chats_file.read_text(encoding="utf-8"))
+    assert calls == {"get_dialogs": 0, "get_folders": 1}
+    assert [chat["id"] for chat in latest_chats] == [1001, 1002]
+    assert any("Folder: id: 7, name: Sign" in str(message) for message in outputs)
+
+
+@pytest.mark.asyncio
+async def test_login_rejects_folder_with_dynamic_rules(monkeypatch, signer_factory):
+    import tg_signer.core as core
+
+    folder = Folder(
+        id=7,
+        name="Personal",
+        pinned_chats=[],
+        included_chats=[],
+        excluded_chats=[],
+        include_contacts=True,
+    )
+
+    async def fake_get_folders(self):
+        del self
+        return [folder]
+
+    patch_client_methods(monkeypatch, core, get_folders=fake_get_folders)
+    signer = signer_factory()
+
+    with pytest.raises(core.ChatFolderError, match="仅支持手动添加对话"):
+        await signer.login(folder="Personal")
+
+
+@pytest.mark.asyncio
+async def test_login_reports_available_folders_when_selection_is_missing(
+    monkeypatch, signer_factory
+):
+    import tg_signer.core as core
+
+    folder = Folder(id=7, name="Sign")
+
+    async def fake_get_folders(self):
+        del self
+        return [folder]
+
+    patch_client_methods(monkeypatch, core, get_folders=fake_get_folders)
+    signer = signer_factory()
+
+    with pytest.raises(core.ChatFolderError, match="7:Sign"):
+        await signer.login(folder="Missing")
 
 
 def test_user_signer_load_sign_record_migrates_legacy_json(signer_factory):

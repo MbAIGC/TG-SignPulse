@@ -34,6 +34,7 @@ from pyrogram.session import Session
 from pyrogram.storage import SQLiteStorage
 from pyrogram.types import (
     Chat,
+    Folder,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
@@ -85,6 +86,10 @@ CHAT_TYPE_LABELS = {
 }
 
 
+class ChatFolderError(RuntimeError):
+    """Raised when an explicit Telegram chat folder cannot be used."""
+
+
 def readable_message(message: Message):
     s = "\nMessage: "
     s += f"\n  text: {message.text or ''}"
@@ -125,6 +130,66 @@ def readable_chat(chat: Chat):
     none_or_dash = lambda x: x or "-"  # noqa: E731
 
     return f"id: {chat.id}, username: {none_or_dash(chat.username)}, title: {none_or_dash(chat.title)}, type: {type_}, name: {none_or_dash(chat.first_name)}"
+
+
+def _folder_dynamic_rules(folder: Folder) -> list[str]:
+    return [
+        label
+        for enabled, label in (
+            (folder.include_contacts, "联系人"),
+            (folder.include_non_contacts, "非联系人"),
+            (folder.include_bots, "机器人"),
+            (folder.include_groups, "群组"),
+            (folder.include_channels, "频道"),
+        )
+        if enabled
+    ]
+
+
+def _explicit_folder_chats(folder: Folder) -> list[Chat]:
+    dynamic_rules = _folder_dynamic_rules(folder)
+    if dynamic_rules:
+        rules = "、".join(dynamic_rules)
+        raise ChatFolderError(
+            f"Folder「{folder.name}」包含动态规则（{rules}），当前仅支持手动添加对话的普通 Folder。"
+        )
+
+    seen_chat_ids = set()
+    chats = []
+    for chat in [
+        *(folder.pinned_chats or []),
+        *(folder.included_chats or []),
+    ]:
+        if chat is None or chat.id in seen_chat_ids:
+            continue
+        seen_chat_ids.add(chat.id)
+        chats.append(chat)
+    return chats
+
+
+def _select_chat_folder(folders: list[Folder], selector: str) -> Folder:
+    selector = selector.strip()
+    if selector.isdecimal():
+        folder_id = int(selector)
+        for folder in folders:
+            if folder.id == folder_id:
+                return folder
+
+    matches = [folder for folder in folders if folder.name == selector]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        ids = "、".join(str(folder.id) for folder in matches)
+        raise ChatFolderError(
+            f"存在多个名为「{selector}」的 Folder，请改用 ID（{ids}）。"
+        )
+
+    available = "、".join(f"{folder.id}:{folder.name}" for folder in folders)
+    if not available:
+        available = "无"
+    raise ChatFolderError(
+        f"未找到 Folder「{selector}」。可用 Folder（ID:名称）：{available}"
+    )
 
 
 def chat_has_forum_topics(chat: Chat) -> bool:
@@ -459,6 +524,31 @@ class BaseUserWorker(Generic[ConfigT]):
         for d in self.get_task_list():
             print_to_user(d)
 
+    async def list_folders(self):
+        self.log("开始获取对话 Folder...")
+        async with self.app:
+            folders = await self._call_telegram_api(
+                "messages.GetDialogFilters", self.app.get_folders
+            )
+
+        if not folders:
+            print_to_user("未找到普通 Folder。")
+            return folders
+
+        for folder in folders:
+            dynamic_rules = _folder_dynamic_rules(folder)
+            if dynamic_rules:
+                support = f"不支持动态规则: {'、'.join(dynamic_rules)}"
+                chat_count = "-"
+            else:
+                support = "支持"
+                chat_count = str(len(_explicit_folder_chats(folder)))
+            print_to_user(
+                f"id: {folder.id}, name: {folder.name}, "
+                f"chats: {chat_count}, mode: {support}"
+            )
+        return folders
+
     def set_me(self, user: User):
         self.user = user
         with open(
@@ -466,7 +556,12 @@ class BaseUserWorker(Generic[ConfigT]):
         ) as fp:
             fp.write(str(user))
 
-    async def login(self, num_of_dialogs=20, print_chat=True):
+    async def login(
+        self,
+        num_of_dialogs=20,
+        print_chat=True,
+        folder: Optional[str] = None,
+    ):
         self.log("开始登录...")
         app = self.app
         key = app.key
@@ -482,28 +577,46 @@ class BaseUserWorker(Generic[ConfigT]):
                     me = await self._call_telegram_api("users.GetFullUser", app.get_me)
 
                     async def load_latest_chats():
-                        chats = []
-                        latest_chats = []
-                        async for dialog in app.get_dialogs(limit=num_of_dialogs):
-                            chat = dialog.chat
-                            chats.append(chat)
-                            latest_chats.append(
-                                {
-                                    "id": chat.id,
-                                    "title": chat.title,
-                                    "type": chat.type,
-                                    "username": chat.username,
-                                    "first_name": chat.first_name,
-                                    "last_name": chat.last_name,
-                                }
-                            )
-                        return chats, latest_chats
+                        selected_folder = None
+                        if folder is None:
+                            chats = []
+                            async for dialog in app.get_dialogs(limit=num_of_dialogs):
+                                chats.append(dialog.chat)
+                        else:
+                            folders = await app.get_folders()
+                            selected_folder = _select_chat_folder(folders, folder)
+                            chats = _explicit_folder_chats(selected_folder)
 
-                    chats, latest_chats = await self._call_telegram_api(
-                        "messages.GetDialogs", load_latest_chats
+                        latest_chats = [
+                            {
+                                "id": chat.id,
+                                "title": chat.title,
+                                "type": chat.type,
+                                "username": chat.username,
+                                "first_name": chat.first_name,
+                                "last_name": chat.last_name,
+                            }
+                            for chat in chats
+                        ]
+                        return chats, latest_chats, selected_folder
+
+                    (
+                        chats,
+                        latest_chats,
+                        selected_folder,
+                    ) = await self._call_telegram_api(
+                        "messages.GetDialogFilters"
+                        if folder is not None
+                        else "messages.GetDialogs",
+                        load_latest_chats,
                     )
 
                     if print_chat:
+                        if selected_folder is not None:
+                            print_to_user(
+                                f"Folder: id: {selected_folder.id}, "
+                                f"name: {selected_folder.name}"
+                            )
                         for chat in chats:
                             print_to_user(readable_chat(chat))
                             if chat_has_forum_topics(chat):
@@ -1000,29 +1113,50 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             await asyncio.sleep(chat.action_interval)
 
     async def run(
-        self, num_of_dialogs=20, only_once: bool = False, force_rerun: bool = False
+        self,
+        num_of_dialogs=20,
+        only_once: bool = False,
+        force_rerun: bool = False,
+        folder: Optional[str] = None,
     ):
         if self.app.in_memory or self.app.session_string:
             return await self.in_memory_run(
-                num_of_dialogs, only_once=only_once, force_rerun=force_rerun
+                num_of_dialogs,
+                only_once=only_once,
+                force_rerun=force_rerun,
+                folder=folder,
             )
         return await self.normal_run(
-            num_of_dialogs, only_once=only_once, force_rerun=force_rerun
+            num_of_dialogs,
+            only_once=only_once,
+            force_rerun=force_rerun,
+            folder=folder,
         )
 
     async def in_memory_run(
-        self, num_of_dialogs=20, only_once: bool = False, force_rerun: bool = False
+        self,
+        num_of_dialogs=20,
+        only_once: bool = False,
+        force_rerun: bool = False,
+        folder: Optional[str] = None,
     ):
         async with self.app:
             await self.normal_run(
-                num_of_dialogs, only_once=only_once, force_rerun=force_rerun
+                num_of_dialogs,
+                only_once=only_once,
+                force_rerun=force_rerun,
+                folder=folder,
             )
 
     async def normal_run(
-        self, num_of_dialogs=20, only_once: bool = False, force_rerun: bool = False
+        self,
+        num_of_dialogs=20,
+        only_once: bool = False,
+        force_rerun: bool = False,
+        folder: Optional[str] = None,
     ):
         if self.user is None:
-            await self.login(num_of_dialogs, print_chat=True)
+            await self.login(num_of_dialogs, print_chat=True, folder=folder)
 
         config = self.load_config(self.cfg_cls)
         if config.requires_ai:
@@ -1093,8 +1227,13 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             self.log(f"下次运行时间: {next_run}")
             await asyncio.sleep((next_run - now).total_seconds())
 
-    async def run_once(self, num_of_dialogs):
-        return await self.run(num_of_dialogs, only_once=True, force_rerun=True)
+    async def run_once(self, num_of_dialogs, folder: Optional[str] = None):
+        return await self.run(
+            num_of_dialogs,
+            only_once=True,
+            force_rerun=True,
+            folder=folder,
+        )
 
     async def send_text(
         self,
@@ -1656,9 +1795,9 @@ class UserMonitor(BaseUserWorker[MonitorConfig]):
             )
         return send_text
 
-    async def run(self, num_of_dialogs=20):
+    async def run(self, num_of_dialogs=20, folder: Optional[str] = None):
         if self.user is None:
-            await self.login(num_of_dialogs, print_chat=True)
+            await self.login(num_of_dialogs, print_chat=True, folder=folder)
 
         cfg = self.load_config(self.cfg_cls)
         if cfg.requires_ai:
