@@ -167,6 +167,29 @@ tests/        单元测试
 
 ## 更新日志
 
+### 2026-08-30
+
+- **同步上游 tg-signer 0.9.0**（amchii 分支，库整体跟进；TG-SignPulse 作为
+  tg-signer 的 Web 端只做适配，详见
+  [doc/sync-amchii-0.9-2026-08-30.md](doc/sync-amchii-0.9-2026-08-30.md)）：
+  - **消息路由升级 RouteKey**：签到消息按 `(chat_id, message_thread_id)`
+    精确路由，支持 `@用户名` 聊天解析为数字 id 并缓存、已消费消息占位、
+    话题回退路由——群组话题签到更稳定
+  - **新增自动化规则引擎**：`tg-signer automation` 子命令
+    （init/validate/run/export/import/reconfig），支持 YAML 配置与插件
+  - **新增会话记录 SQLite 主存储**：`<workdir>/data.sqlite3` 为唯一主存储，
+    旧 `sign_record.json` 自动导入兼容；新命令
+    `list-sign-records` / `migrate-sign-records`
+  - **CLI 新增**：`list-folders`（文件夹加载）/ `version`；`run` 支持
+    `--folder` 按 Telegram 文件夹过滤会话；session 内存模式
+  - **依赖升级**：kurigram `>=2.2.19,<2.3.0`（`MemoryStorage` 已移除，
+    内存会话改用 SQLiteStorage `in_memory=True`）
+  - **保留面板能力**：客户端引用计数生命周期、AI 识图/计算题/关键词监听
+    动作（含 ai_prompt）、`_click_keyboard_by_text` 简单分发优先 + 后点击
+    跟随/终态判定/历史回退的 wait_for 增强
+  - 测试：**166 通过**（含恢复的 0.9.0 库测试与自动化测试）；
+    `tg_signer/` ruff 0.14.6 全绿
+
 ### 2026-08-29
 
 - **同步上游安全加固**（akasls 分支 2026-08-22 更新，选择性吸收，详见

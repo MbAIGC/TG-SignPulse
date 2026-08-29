@@ -168,6 +168,32 @@ tests/        unit tests
 
 ## Changelog
 
+### 2026-08-30
+
+- **Synced upstream tg-signer 0.9.0** (amchii branch; TG-SignPulse is the Web
+  frontend of tg-signer, so the library is fully tracked to 0.9.0 and the
+  panel is only adapted — see
+  [doc/sync-amchii-0.9-2026-08-30.md](doc/sync-amchii-0.9-2026-08-30.md)):
+  - **RouteKey message routing**: messages are routed by `(chat_id,
+    message_thread_id)`, `@username` chats are resolved and cached to numeric
+    ids, consumed-message placeholders, and thread fallback routing
+  - **New automation rule engine**: `tg-signer automation` subcommands
+    (init/validate/run/export/import/reconfig) with YAML configs and plugins
+  - **SQLite check-in record store**: `<workdir>/data.sqlite3` is now the
+    single source of truth; legacy `sign_record.json` is auto-imported;
+    new `list-sign-records` / `migrate-sign-records` commands
+  - **New CLI**: `list-folders`, `version`; `run --folder` to filter chats by
+    Telegram folder; in-memory session mode
+  - **Dependency upgrade**: kurigram `>=2.2.19,<2.3.0` (`MemoryStorage`
+    removed; use SQLiteStorage `in_memory=True` for memory sessions)
+  - **Panel abilities kept**: reference-counted client lifecycle, AI
+    image/calculation/keyword actions (incl. `ai_prompt`), wait_for
+    enhancements (simple dispatch first + post-click follow-up / terminal
+    success / history fallback)
+  - Tests: **166 passing** (incl. restored 0.9.0 library tests and automation
+    tests); `tg_signer/` passes ruff 0.14.6
+
+
 ### 2026-08-17
 
 - **"Client has not been started yet" fix**: background operations (account

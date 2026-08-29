@@ -31,6 +31,18 @@ docker compose logs -f        # 查看日志
 
 ## 3. 优化历史
 
+### 2026-08-30 库整体同步 amchii/tg-signer 0.9.0
+
+- 提交 `f3b812a`（分支 sync-amchii-0.9，3 路合并：库功能来 0.9.0，
+  面板依赖保我方；TG-SignPulse 只是 tg-signer 的 Web 端）
+- 要点：RouteKey 消息路由（(chat_id, message_thread_id)）、automation
+  规则引擎、SQLite 签到记录主存储（data.sqlite3）、kurigram 2.2.25
+  （内存会话=SQLiteStorage in_memory）、pydantic v2、CLI folder 加载
+- 保留：客户端引用计数生命周期（__aenter__ 对 ConnectionError 抛错）、
+  AI 动作 6/7/8 + ai_prompt、wait_for 后点击跟随/终态判定/历史回退
+  （简单分发优先）
+- 详细裁决表见 [doc/sync-amchii-0.9-2026-08-30.md](doc/sync-amchii-0.9-2026-08-30.md)
+
 ### 2026-08-09 第一轮：代码现代化 + 构建修复
 
 - 提交 `a65dba9`（含后续多轮修改）
@@ -126,6 +138,11 @@ docker compose logs -f        # 查看日志
   并验证依赖 wheel（kurigram 纯 Python，uvloop/httptools/pillow/bcrypt 均有 arm64 wheel）
 - **根目录 vitepress 残留已清理**：原 `package.json`/`package-lock.json`
   只有 docs 脚本但无 `docs/` 目录
+- **backend/ ruff E402 存量**：后端多处"函数内/代码后 import"属历史风格，
+  未在 0.9.0 同步中清理（`tg_signer/` 全绿）；清理时注意 main.py 的
+  懒导入依赖启动时环境变量
+- **get_me 计数**：我方 `__aenter__` 握手多调一次 `get_me`，并发共享登录
+  引导测试按 2 次断言
 
 ## 5. 本地开发
 
