@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Optional
 
 
 def reset_totp_cmd(username: str) -> bool:
     """Reset TOTP two-factor authentication for the specified username."""
     from sqlalchemy.orm import Session
+
     from backend.core.database import get_session_local, init_engine
     from backend.models.user import User
 
@@ -44,6 +44,7 @@ def reset_password_cmd(username: str, new_password: str) -> bool:
         return False
 
     from sqlalchemy.orm import Session
+
     from backend.core.database import get_session_local, init_engine
     from backend.core.security import hash_password
     from backend.models.user import User
@@ -72,6 +73,7 @@ def reset_password_cmd(username: str, new_password: str) -> bool:
 def list_users_cmd() -> bool:
     """List all registered users and their 2FA status."""
     from sqlalchemy.orm import Session
+
     from backend.core.database import get_session_local, init_engine
     from backend.models.user import User
 

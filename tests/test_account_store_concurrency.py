@@ -2,12 +2,11 @@ import concurrent.futures
 import shutil
 import tempfile
 from pathlib import Path
-from backend.core.config import get_settings
+
 from backend.utils.tg_session import (
-    set_account_profile,
     get_account_profile,
     list_account_names,
-    delete_account_session_string,
+    set_account_profile,
 )
 
 

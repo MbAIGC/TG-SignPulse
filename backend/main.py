@@ -179,6 +179,11 @@ if assets_dir.exists():
 # Catch-all 路由：处理所有前端路由，返回 index.html，刷新页面时不会 404
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
+    # API 文档端点已在生产环境禁用（docs_url/redoc_url/openapi_url=None），
+    # 直接 404，避免落入 SPA 兜底/重定向逻辑
+    if full_path in ("docs", "redoc", "openapi.json", "docs/oauth2-redirect"):
+        return Response(content="Not Found", status_code=status.HTTP_404_NOT_FOUND)
+
     # 检查是否是静态文件请求（严格防御路径穿越：所有解析结果必须落在 web_dir 内）
     if web_dir.exists():
         try:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 import re
 
 _WINDOWS_RESERVED_NAMES = {

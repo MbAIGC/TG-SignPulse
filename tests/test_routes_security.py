@@ -1,12 +1,12 @@
 import pytest
 from fastapi.testclient import TestClient
-from backend.main import app
-from backend.core.auth import create_access_token, get_current_user
-from backend.core.database import get_db, Base, get_engine
-from backend.models.user import User
-from backend.models.task_log import TaskLog
+
+from backend.core.auth import create_access_token
+from backend.core.database import Base, get_db, get_engine
 from backend.core.security import hash_password
-from backend.core.config import get_settings
+from backend.main import app
+from backend.models.task_log import TaskLog
+from backend.models.user import User
 
 
 @pytest.fixture

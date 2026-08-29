@@ -1,5 +1,6 @@
 import pytest
 from starlette.requests import Request
+
 from backend.core.rate_limit import InMemoryRateLimiter, get_client_identifier
 
 
