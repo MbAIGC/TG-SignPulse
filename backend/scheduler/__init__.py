@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from backend.core.database import get_session_local
 from backend.models.task import Task
 from backend.services.tasks import run_task_once
+from backend.utils.memory import trim_memory
 
 scheduler: AsyncIOScheduler | None = None
 logger = logging.getLogger("backend.scheduler")
@@ -82,6 +83,7 @@ async def _job_run_task(task_id: int) -> None:
         await run_task_once(db, task)
     finally:
         db.close()
+        trim_memory()
 
 
 async def _job_run_sign_task(
@@ -166,6 +168,8 @@ async def _job_run_sign_task(
             logger.error(f"Scheduler: 任务 {task_name} 执行失败: {result.get('error')}")
     except Exception as e:
         logger.error(f"Scheduler: 运行签到任务 {task_name} 失败: {e}", exc_info=True)
+    finally:
+        trim_memory()
 
 
 async def _job_maintenance() -> None:
@@ -187,6 +191,7 @@ async def _job_maintenance() -> None:
         sign_service._prune_stale_entries()
     finally:
         db.close()
+        trim_memory()
 
 
 async def sync_jobs() -> None:
