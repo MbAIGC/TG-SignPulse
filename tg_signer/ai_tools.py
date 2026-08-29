@@ -38,9 +38,7 @@ DEFAULT_EXTRACT_TEXT_BY_IMAGE_PROMPT = (
     "Return plain text only, no markdown, no explanation."
 )
 
-DEFAULT_CALCULATE_PROBLEM_PROMPT = (
-    "你是一个**答题助手**，可以根据用户的问题给出正确的回答，只需要回复答案，不要解释，不要输出任何其他内容。"
-)
+DEFAULT_CALCULATE_PROBLEM_PROMPT = "你是一个**答题助手**，可以根据用户的问题给出正确的回答，只需要回复答案，不要解释，不要输出任何其他内容。"
 
 
 def encode_image(image: bytes):
@@ -146,7 +144,9 @@ class AITools:
         system_prompt: str | None = None,
         temperature=0.1,
     ) -> int:
-        sys_prompt = (system_prompt or "").strip() or DEFAULT_CHOOSE_OPTION_BY_IMAGE_PROMPT
+        sys_prompt = (
+            system_prompt or ""
+        ).strip() or DEFAULT_CHOOSE_OPTION_BY_IMAGE_PROMPT
         client = client or self.client
         model = model or self.default_model
         text_query = f"问题为：{query}, 选项为：{json.dumps(options)}。"
@@ -187,7 +187,9 @@ class AITools:
         system_prompt: str | None = None,
         temperature=0.1,
     ) -> list[int]:
-        sys_prompt = (system_prompt or "").strip() or DEFAULT_CHOOSE_OPTIONS_BY_IMAGE_PROMPT
+        sys_prompt = (
+            system_prompt or ""
+        ).strip() or DEFAULT_CHOOSE_OPTIONS_BY_IMAGE_PROMPT
         client = client or self.client
         model = model or self.default_model
         text_query = (
@@ -239,7 +241,9 @@ class AITools:
         system_prompt: str | None = None,
         temperature=0.1,
     ) -> str:
-        sys_prompt = (system_prompt or "").strip() or DEFAULT_EXTRACT_TEXT_BY_IMAGE_PROMPT
+        sys_prompt = (
+            system_prompt or ""
+        ).strip() or DEFAULT_EXTRACT_TEXT_BY_IMAGE_PROMPT
         client = client or self.client
         model = model or self.default_model
         text_query = query or "Extract the key text from this image."
@@ -269,6 +273,7 @@ class AITools:
     async def calculate_problem(
         self,
         query: str,
+        sys_prompt: str = """你是一个**答题助手**，可以根据用户的问题给出正确的回答，只需要回复答案，不要解释，不要输出任何其他内容。""",
         client: "AsyncOpenAI" = None,
         model: str = None,
         system_prompt: str | None = None,
@@ -277,13 +282,14 @@ class AITools:
         sys_prompt = (system_prompt or "").strip() or DEFAULT_CALCULATE_PROBLEM_PROMPT
         model = model or self.default_model
         client = client or self.client
+        messages = []
+        if sys_prompt:
+            messages.append({"role": "system", "content": sys_prompt})
         text = f"问题是: {query}\n\n只需要给出答案，不要解释，不要输出任何其他内容。The answer is:"
+        messages.append({"role": "user", "content": text})
         # noinspection PyTypeChecker
         completion = await client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": text},
-            ],
+            messages=messages,
             model=model,
             stream=False,
             temperature=temperature,
@@ -292,7 +298,7 @@ class AITools:
 
     async def get_reply(
         self,
-        prompt: str,
+        sys_prompt: str,
         query: str,
         client: "AsyncOpenAI" = None,
         model: str = None,
@@ -302,7 +308,7 @@ class AITools:
         messages = [
             {
                 "role": "system",
-                "content": prompt,
+                "content": sys_prompt,
             },
             {"role": "user", "content": f"{query}"},
         ]

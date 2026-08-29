@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import BaseModel

@@ -906,8 +906,8 @@ def export_account_logs(
 
     for item in history:
         time_str = item.get("time", "").replace("T", " ")[:19]
-        status = "SUCCESS" if item.get("success") else "FAILED"
-        content += f"[{time_str}] Task: {item.get('task_name')} | Status: {status}\n"
+        state_text = "SUCCESS" if item.get("success") else "FAILED"
+        content += f"[{time_str}] Task: {item.get('task_name')} | Status: {state_text}\n"
         if item.get("message"):
             content += f"Message: {item.get('message')}\n"
         content += "-" * 20 + "\n"
