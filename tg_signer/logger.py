@@ -43,6 +43,7 @@ def configure_logger(
             h.close()
         except Exception:
             pass
+    logger.setLevel(level_no)
     logger.handlers.clear()
     logger.propagate = False
 

@@ -316,6 +316,9 @@ def disable_totp(
     db.commit()
     clear_pending_totp_secret(current_user.id)
 
+    return DisableTOTPResponse(success=True, message="两步验证已禁用")
+
+
 class ResetUserTOTPRequest(BaseModel):
     password: str
 
