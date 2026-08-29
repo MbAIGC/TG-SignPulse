@@ -167,6 +167,27 @@ tests/        单元测试
 
 ## 更新日志
 
+### 2026-08-29
+
+- **同步上游安全加固**（akasls 分支 2026-08-22 更新，选择性吸收，详见
+  [doc/upstream-sync-akasls-2026-08-29.md](doc/upstream-sync-akasls-2026-08-29.md)）：
+  - **存储名安全**：账号/任务名校验拒绝 Windows 非法字符、结尾点/空格与
+    保留设备名（con/nul/com1 等），修复跨平台路径穿越
+  - **API 加固**：任务日志读取沙箱路径边界校验；生产环境禁用
+    Swagger/ReDoc/OpenAPI 文档端点（`/docs`、`/openapi.json` 直接 404）
+  - **认证加固**：TOTP 待绑定缓存并发锁、`/totp/disable` 修复（恢复缺失的
+    return，修复上游引入的 500）、`/totp/reset` 强校验密码、应急重置需
+    `APP_EMERGENCY_RESET_KEY`（或 `python -m backend.cli reset-totp`）
+  - **基础设施**：账号配置 JSON 原子写 + 线程锁、速率限制 IP 伪造防护与
+    过期清理、SQLite WAL/busy_timeout 调优、内存回收（trim_memory）与
+    httpx 连接池复用
+  - **修复上游 BUG**：`configure_logger` 丢失 `setLevel` 导致 INFO 日志不落盘；
+    `disable_totp` 缺失 return 导致 HTTP 500
+  - **新增**：5 个安全测试文件（19/19 通过）、`backend.cli` 管理员命令
+    （reset-totp / reset-password / list-users）
+  - 注意：CLI 默认不再拉取对话列表（`--num-of-dialogs` 默认 0）；
+    账号名校验更严格，存量含非法字符的账号需先重命名
+
 ### 2026-08-17
 
 - **修复 "Client has not been started yet"**：后台操作（账号删除/重登/状态检测、

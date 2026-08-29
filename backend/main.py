@@ -106,6 +106,15 @@ async def _shutdown() -> None:
         await get_keyword_monitor_service().stop()
     except Exception:
         pass
+    try:
+        from tg_signer.core import close_all_clients
+
+        await close_all_clients()
+    except Exception:
+        pass
+    from backend.utils.memory import trim_memory
+
+    trim_memory()
 
 
 @asynccontextmanager
@@ -120,6 +129,10 @@ app = FastAPI(
     title=settings.app_name,
     version=tg_signer_version,
     lifespan=lifespan,
+    # 生产环境禁用 Swagger UI / ReDoc / OpenAPI schema (docs_url=None)
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 app.state.ready = False
 
@@ -166,20 +179,28 @@ if assets_dir.exists():
 # Catch-all 路由：处理所有前端路由，返回 index.html，刷新页面时不会 404
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
-    # 静态文件直接返回
-    file_path = web_dir / full_path
-    if file_path.exists() and file_path.is_file():
-        return FileResponse(file_path)
+    # API 文档端点已在生产环境禁用（docs_url/redoc_url/openapi_url=None），
+    # 直接 404，避免落入 SPA 兜底/重定向逻辑
+    if full_path in ("docs", "redoc", "openapi.json", "docs/oauth2-redirect"):
+        return Response(content="Not Found", status_code=status.HTTP_404_NOT_FOUND)
 
-    # 尝试 .html 后缀（静态导出场景）
-    html_path = web_dir / f"{full_path}.html"
-    if html_path.exists() and html_path.is_file():
-        return FileResponse(html_path)
+    # 检查是否是静态文件请求（严格防御路径穿越：所有解析结果必须落在 web_dir 内）
+    if web_dir.exists():
+        try:
+            resolved_web = web_dir.resolve()
+            file_path = (web_dir / full_path).resolve()
+            if str(file_path).startswith(str(resolved_web)) and file_path.is_file():
+                return FileResponse(file_path)
 
-    # 否则返回 index.html（SPA 路由）
-    index_path = web_dir / "index.html"
-    if index_path.exists():
-        return FileResponse(index_path)
+            html_path = (web_dir / f"{full_path}.html").resolve()
+            if str(html_path).startswith(str(resolved_web)) and html_path.is_file():
+                return FileResponse(html_path)
+
+            index_path = resolved_web / "index.html"
+            if index_path.exists() and index_path.is_file():
+                return FileResponse(index_path)
+        except Exception:
+            pass
 
     # 开发模式下重定向到前端开发服务器，生产环境返回 404
     if settings.frontend_dev_url:
@@ -235,3 +256,4 @@ def _pre_export_session_strings() -> None:
 
     if exported:
         logger.info(f"Pre-exported {exported} session strings for in-memory task execution")
+
