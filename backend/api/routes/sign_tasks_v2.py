@@ -750,6 +750,7 @@ async def sign_task_logs_ws(
     last_idx = 0
     connected_at = asyncio.get_running_loop().time()
     seen_activity = False
+    sent_snapshot = False
     try:
         while True:
             active_logs = get_sign_task_service().get_active_logs(
@@ -763,7 +764,7 @@ async def sign_task_logs_ws(
             if is_running or bool(active_logs):
                 seen_activity = True
 
-            if len(active_logs) > last_idx:
+            if len(active_logs) > last_idx or not sent_snapshot:
                 new_logs = active_logs[last_idx:]
                 await websocket.send_json(
                     {
@@ -773,6 +774,7 @@ async def sign_task_logs_ws(
                     }
                 )
                 last_idx = len(active_logs)
+                sent_snapshot = True
 
             if (
                 not is_running

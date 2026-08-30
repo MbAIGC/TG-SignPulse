@@ -3320,13 +3320,31 @@ class SignTaskService:
         except Exception as e:  # pragma: no cover - IO 失败不阻断主流程
             _service_logger.debug(f"持久化运行状态失败: {e}")
 
+    @staticmethod
+    def _is_recorded_worker_alive(status: Dict[str, Any]) -> bool:
+        """Return whether a recorded local worker process is still alive."""
+        worker_id = str(status.get("worker_id") or "")
+        try:
+            pid_text, hostname = worker_id.split("@", 1)
+            if hostname != socket.gethostname():
+                return False
+            pid = int(pid_text)
+            if pid <= 0:
+                return False
+            os.kill(pid, 0)
+            return True
+        except (OSError, ValueError):
+            return False
+
     def _load_persisted_run_statuses(self) -> None:
         """启动时从磁盘恢复最近运行状态（每个任务保留最新一条）。"""
         for data in self._run_state_store.latest_states():
             account_name = str(data.get("account_name") or "")
             task_name = str(data.get("task_name") or "")
             if account_name and task_name:
-                if data.get("state") == "running":
+                if data.get(
+                    "state"
+                ) == "running" and not self._is_recorded_worker_alive(data):
                     data["state"] = "cancelled"
                     data["success"] = False
                     data["error"] = str(data.get("error") or "") or "进程重启，运行中断"
@@ -3349,9 +3367,9 @@ class SignTaskService:
                 # SQLite is authoritative when it already has this task's run.
                 if task_key in self._run_statuses:
                     continue
-                # 重启前状态为 running 的运行已随进程结束，标记为 cancelled（中断）
+                # 旧 JSON 没有可靠 worker 信息时按兼容规则视为中断。
                 state = data.get("state")
-                if state == "running":
+                if state == "running" and not self._is_recorded_worker_alive(data):
                     data["state"] = "cancelled"
                     data["success"] = False
                     data["error"] = str(data.get("error") or "") or "进程重启，运行中断"
@@ -3740,6 +3758,9 @@ class SignTaskService:
 
         # 调用方已持锁时跳过获取（DB task 复用进程内执行链路），否则正常排队取锁
         lock_ctx = nullcontext() if lock_already_held else account_lock
+        self._active_logs[task_key].append(
+            f"任务已启动，正在检查账号状态: {account_name}"
+        )
 
         try:
             task_cfg = self.get_task(task_name, account_name=account_name)
@@ -3774,6 +3795,7 @@ class SignTaskService:
                 )
                 self._active_logs[task_key].append(error_msg)
             else:
+                self._active_logs[task_key].append("账号状态检查通过，正在获取执行锁")
                 if has_keyword_monitor:
                     try:
                         from backend.services.keyword_monitor import (
@@ -3806,8 +3828,11 @@ class SignTaskService:
                         tg_logger.setLevel(logging.INFO)
                     tg_logger.addHandler(log_handler)
 
-                    _service_logger.debug(
-                        f"已获取账号锁 {account_name}，开始执行任务 {task_name}"
+                    _service_logger.info(
+                        "Task execution lock acquired account=%s task=%s run_id=%s",
+                        account_name,
+                        task_name,
+                        run_id,
                     )
                     self._active_logs[task_key].append(
                         f"开始执行任务: {task_name} (账号: {account_name})"
@@ -3875,6 +3900,10 @@ class SignTaskService:
                             "关键词监听说明: 该动作由后台常驻监听服务执行；本次手动运行只会刷新并展示后台监听状态，不代表监听只运行一次。"
                         )
 
+                    self._active_logs[task_key].append(
+                        "账号锁已获取，正在初始化 Telegram 客户端"
+                    )
+
                     # 实例化 UserSigner (使用 BackendUserSigner)
                     # 注意: UserSigner 内部会使用 get_client 复用 client
                     signer = BackendUserSigner(
@@ -3893,6 +3922,9 @@ class SignTaskService:
                     # 执行任务（数据库锁冲突时重试，带超时保护）
                     task_timeout = float(
                         os.getenv("SIGN_TASK_EXECUTION_TIMEOUT", "300")
+                    )
+                    self._active_logs[task_key].append(
+                        "Telegram 客户端已初始化，正在执行任务动作"
                     )
                     async with get_global_semaphore():
                         max_retries = 5

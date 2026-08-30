@@ -161,6 +161,11 @@ def test_interrupted_running_marked_cancelled_after_restart(sign_task_service):
     )
     status_file = svc._run_status_file_path(account, task)
     assert status_file.exists()
+    # Simulate a real restart: the original process no longer exists.
+    stored = svc._run_state_store.get(run_id)
+    assert stored is not None
+    stored["worker_id"] = "99999999@missing-worker"
+    svc._run_state_store.save(stored)
 
     # 模拟重启
     import backend.services.sign_tasks as st
