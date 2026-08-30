@@ -1,8 +1,8 @@
 import time
 from datetime import timedelta
 
-import pyotp
-from jose import jwt
+from backend.vendor import pyotp
+from backend.vendor.jose import jwt
 
 from backend.api.routes.user import (
     _cleanup_expired_pending_totp_secrets,
