@@ -19,10 +19,12 @@ ENV PIP_NO_CACHE_DIR=1 \
 WORKDIR /build
 
 COPY pyproject.toml README.md LICENSE ./
-COPY tg_signer/ tg_signer/
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
-    && /opt/venv/bin/pip install .
+    && /opt/venv/bin/pip install tgcrypto
+
+COPY tg_signer/ tg_signer/
+RUN /opt/venv/bin/pip install .
 
 # ---------- 3. 运行镜像 ----------
 FROM python:3.11-slim AS runtime
