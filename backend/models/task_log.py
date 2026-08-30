@@ -12,6 +12,7 @@ class TaskLog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False, index=True)
+    run_id = Column(String(32), nullable=True, index=True)
     status = Column(String(32), nullable=False, default="pending")
     log_path = Column(String(255), nullable=True)
     output = Column(Text, nullable=True)

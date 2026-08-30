@@ -59,3 +59,38 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def ensure_schema_upgrades() -> None:
+    """幂等补齐轻量 schema 演进（create_all 不会为已存在表加列）。
+
+    目前仅需：task_logs.run_id（每次运行唯一 run_id 的可追溯列）。
+    """
+    engine = get_engine()
+    try:
+        inspector = _get_inspector(engine)
+        if "task_logs" not in inspector.get_table_names():
+            return
+        columns = {col["name"] for col in inspector.get_columns("task_logs")}
+        if "run_id" not in columns:
+            with engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "ALTER TABLE task_logs ADD COLUMN run_id VARCHAR(32)"
+                )
+    except Exception as e:  # pragma: no cover - 迁移失败不阻断启动
+        import logging
+
+        logging.getLogger("backend.database").warning(
+            "ensure_schema_upgrades 失败（可忽略，后续运行会重试）: %s", e
+        )
+
+
+def _get_inspector(engine: Engine):
+    try:
+        from sqlalchemy import inspect as sa_inspect
+
+        return sa_inspect(engine)
+    except TypeError:  # pragma: no cover - sqlalchemy < 2.0 兼容
+        from sqlalchemy.engine.reflection import Inspector
+
+        return Inspector.from_engine(engine)

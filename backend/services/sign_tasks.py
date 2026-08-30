@@ -143,6 +143,9 @@ class SignTaskService:
         self._tasks_cache = None  # 内存缓存
         self._account_locks: Dict[str, asyncio.Lock] = {}  # 账号锁
         self._account_last_run_end: Dict[str, float] = {}  # 账号最后一次结束时间
+        self._run_status_dir = self.run_history_dir / "_run_status"
+        self._run_status_dir.mkdir(parents=True, exist_ok=True)
+        self._load_persisted_run_statuses()
         self._account_cooldown_seconds = int(
             os.getenv("SIGN_TASK_ACCOUNT_COOLDOWN", "5")
         )
@@ -1477,11 +1480,19 @@ class SignTaskService:
         )
         last_target_message = extract_last_target_message(normalized_logs)
 
+        # 每次运行都有唯一 run_id：优先取当前运行状态中的 run_id，
+        # 未走 start_task_run 的直调路径则新生成一个。
+        current_status = self._run_statuses.get(
+            self._task_key(account_name, task_name)
+        ) or {}
+        run_id = str(current_status.get("run_id") or "") or uuid.uuid4().hex
+
         new_entry = {
             "time": datetime.now().isoformat(),
             "success": success,
             "message": self._repair_mojibake(message),
             "account_name": account_name,
+            "run_id": run_id,
             "flow_logs": normalized_logs,
             "flow_truncated": flow_truncated,
             "flow_line_count": flow_line_count,
@@ -3083,6 +3094,46 @@ class SignTaskService:
             return logs
         return monitor_logs
 
+    def _run_status_file_path(self, account_name: str, task_name: str) -> Path:
+        safe_account = self._safe_history_key(account_name)
+        safe_task = self._safe_history_key(task_name)
+        return self._run_status_dir / f"{safe_account}__{safe_task}.json"
+
+    def _persist_run_status(
+        self, account_name: str, task_name: str, status: Dict[str, Any]
+    ) -> None:
+        """把最新运行状态原子写入磁盘，供重启/多 worker 恢复。"""
+        try:
+            atomic_write_json(self._run_status_file_path(account_name, task_name), status)
+        except Exception as e:  # pragma: no cover - IO 失败不阻断主流程
+            _service_logger.debug(f"持久化运行状态失败: {e}")
+
+    def _load_persisted_run_statuses(self) -> None:
+        """启动时从磁盘恢复最近运行状态（每个任务保留最新一条）。"""
+        if not self._run_status_dir.exists():
+            return
+        for status_file in self._run_status_dir.glob("*.json"):
+            try:
+                with open(status_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    continue
+                account_name = str(data.get("account_name") or "")
+                task_name = str(data.get("task_name") or "")
+                if not account_name or not task_name:
+                    continue
+                task_key = self._task_key(account_name, task_name)
+                # 重启前状态为 running 的运行已随进程结束，标记为 cancelled（中断）
+                state = data.get("state")
+                if state == "running":
+                    data["state"] = "cancelled"
+                    data["success"] = False
+                    data["error"] = str(data.get("error") or "") or "进程重启，运行中断"
+                    data["finished_at"] = utc_now_iso()
+                self._run_statuses[task_key] = data
+            except Exception as e:  # pragma: no cover
+                _service_logger.debug(f"恢复运行状态失败 {status_file.name}: {e}")
+
     def _set_run_status(
         self,
         account_name: str,
@@ -3105,8 +3156,12 @@ class SignTaskService:
             "output": str(output or ""),
             "started_at": started_at or utc_now_iso(),
             "finished_at": finished_at,
+            # 额外冗余字段，便于磁盘恢复时重建 key
+            "account_name": account_name,
+            "task_name": task_name,
         }
         self._run_statuses[task_key] = status
+        self._persist_run_status(account_name, task_name, status)
         return dict(status)
 
     def _schedule_run_status_cleanup(self, account_name: str, task_name: str) -> None:
@@ -3120,6 +3175,12 @@ class SignTaskService:
                 await asyncio.sleep(600)
                 if not self._active_tasks.get(task_key):
                     self._run_statuses.pop(task_key, None)
+                    try:
+                        self._run_status_file_path(account_name, task_name).unlink(
+                            missing_ok=True
+                        )
+                    except Exception:  # pragma: no cover
+                        pass
             finally:
                 self._run_status_cleanup_tasks.pop(task_key, None)
 

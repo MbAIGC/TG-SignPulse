@@ -34,6 +34,7 @@ from backend.api import router as api_router  # noqa: E402
 from backend.core.config import get_settings  # noqa: E402
 from backend.core.database import (  # noqa: E402
     Base,
+    ensure_schema_upgrades,
     get_engine,
     get_session_local,
     init_engine,
@@ -69,6 +70,7 @@ async def _startup() -> None:
     ensure_data_dirs(settings)
     init_engine()
     Base.metadata.create_all(bind=get_engine())
+    ensure_schema_upgrades()
     with get_session_local()() as db:
         ensure_admin(db)
     await init_scheduler(sync_on_startup=False)

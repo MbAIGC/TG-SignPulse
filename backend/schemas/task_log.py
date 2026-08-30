@@ -16,6 +16,7 @@ _PYDANTIC_V2 = hasattr(BaseModel, "model_validate")
 class TaskLogOut(BaseModel):
     id: int
     task_id: int
+    run_id: Optional[str] = None
     status: str
     log_path: Optional[str] = None
     output: Optional[str] = None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import timedelta
 from pathlib import Path
 from typing import List, Optional
@@ -142,6 +143,7 @@ async def run_task_once(db: Session, task: Task) -> TaskLog:
 
     task_log = TaskLog(
         task_id=task.id,
+        run_id=uuid.uuid4().hex,
         status="running",
         log_path=str(log_file),
         started_at=utc_now_naive(),

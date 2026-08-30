@@ -2,7 +2,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.core.auth import create_access_token
-from backend.core.database import Base, get_db, get_engine
+from backend.core.database import (
+    Base,
+    ensure_schema_upgrades,
+    get_db,
+    get_engine,
+)
 from backend.core.security import hash_password
 from backend.main import app
 from backend.models.task_log import TaskLog
@@ -14,6 +19,7 @@ def client_with_user():
     # Setup test user
     engine = get_engine()
     Base.metadata.create_all(bind=engine)
+    ensure_schema_upgrades()
     db_gen = get_db()
     db = next(db_gen)
 
@@ -243,7 +249,10 @@ def test_weak_secret_key_rejected():
 def test_session_string_file_permissions_0o600(monkeypatch, tmp_path):
     """修复 6：session_string 文件必须为 0o600，会话目录 0o700。"""
     from backend.core.config import Settings
-    from backend.utils.tg_session import _write_session_string_file, save_session_string_file
+    from backend.utils.tg_session import (
+        _write_session_string_file,
+        save_session_string_file,
+    )
 
     session_dir = tmp_path / "sessions"
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -302,7 +311,6 @@ def test_ws_first_frame_auth_accepts_valid_token(client_with_user):
 def test_config_error_responses_are_stable(client_with_user, monkeypatch, tmp_path):
     """修复 8：配置路由的未知异常响应必须稳定，不泄露 str(e)。"""
     from backend.core.config import Settings
-    from backend.services import config as config_service_mod
 
     client, headers, user, db = client_with_user
 
