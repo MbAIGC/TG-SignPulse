@@ -18,6 +18,8 @@ services:
       # 跨进程账号级执行锁：默认开启（多 worker/多进程部署必需）。
       # 单进程部署可设为 0 关闭以省去文件锁开销。
       - ACCOUNT_LOCK_FILE=${ACCOUNT_LOCK_FILE:-1}
+      # 仅在前置反向代理可信并正确覆盖转发头时启用。
+      - APP_TRUST_PROXY_HEADERS=${APP_TRUST_PROXY_HEADERS:-0}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
       interval: 30s

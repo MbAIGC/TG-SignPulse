@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import secrets
@@ -12,7 +13,11 @@ from sqlalchemy.orm import Session
 from backend.core import auth as auth_core
 from backend.core.auth import authenticate_user, create_access_token, verify_totp
 from backend.core.database import get_db
-from backend.core.rate_limit import compose_rate_limit_key, get_rate_limiter
+from backend.core.rate_limit import (
+    compose_rate_limit_key,
+    get_rate_limiter,
+    trust_proxy_headers,
+)
 from backend.core.security import verify_password
 from backend.models.login_log import LoginLog
 from backend.models.user import User
@@ -23,25 +28,39 @@ logger = logging.getLogger("backend.auth")
 rate_limiter = get_rate_limiter()
 
 LOGIN_RATE_LIMIT_DETAIL = "Too many login attempts. Please try again later."
-RESET_TOTP_RATE_LIMIT_DETAIL = (
-    "Too many TOTP reset attempts. Please try again later."
-)
+RESET_TOTP_RATE_LIMIT_DETAIL = "Too many TOTP reset attempts. Please try again later."
 
 
 def _resolve_request_ip(request: Request) -> str:
-    forwarded_for = request.headers.get("x-forwarded-for", "")
-    if forwarded_for:
-        first_hop = forwarded_for.split(",", 1)[0].strip()
-        if first_hop:
-            return first_hop
+    if trust_proxy_headers():
+        forwarded_for = request.headers.get("x-forwarded-for", "")
+        if forwarded_for:
+            first_hop = forwarded_for.split(",", 1)[0].strip()
+            try:
+                ipaddress.ip_address(first_hop)
+                return first_hop
+            except ValueError:
+                pass
 
-    real_ip = request.headers.get("x-real-ip", "").strip()
-    if real_ip:
-        return real_ip
+        real_ip = request.headers.get("x-real-ip", "").strip()
+        try:
+            ipaddress.ip_address(real_ip)
+            return real_ip
+        except ValueError:
+            pass
 
-    if request.client and request.client.host:
-        return request.client.host
-    return ""
+    return request.client.host if request.client and request.client.host else ""
+
+
+def _redact_ip(value: str) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return "<redacted>"
+    if address.version == 4:
+        return ".".join(value.split(".")[:2] + ["x", "x"])
+    groups = address.exploded.split(":")
+    return ":".join(groups[:2] + ["x"] * 6)
 
 
 def _append_login_log(
@@ -56,8 +75,9 @@ def _append_login_log(
         db.add(
             LoginLog(
                 username=(username or "").strip() or "unknown",
-                ip_address=_resolve_request_ip(request) or None,
-                user_agent=(request.headers.get("user-agent", "") or "").strip()[:255] or None,
+                ip_address=_redact_ip(_resolve_request_ip(request)) or None,
+                user_agent=(request.headers.get("user-agent", "") or "").strip()[:255]
+                or None,
                 detail=(detail or "").strip()[:255] or None,
                 success=success,
             )
@@ -235,4 +255,6 @@ def reset_totp(
             message="该用户未启用两步验证，待确认设置已清理",
         )
 
-    return ResetTOTPResponse(success=True, message="两步验证已安全重置，现在可以正常登录")
+    return ResetTOTPResponse(
+        success=True, message="两步验证已安全重置，现在可以正常登录"
+    )

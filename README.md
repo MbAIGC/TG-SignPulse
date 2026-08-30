@@ -122,6 +122,7 @@ touch /data/.probe && rm /data/.probe
 - `APP_SECRET_KEY`：面板密钥，强烈建议设置；未设置时自动生成并持久化
 - `ADMIN_PASSWORD`：初次安装时 admin 账号的初始密码（推荐设置；未设置则
   读取 `/data/.admin_bootstrap_password`）
+- `APP_TRUST_PROXY_HEADERS`：是否信任 `X-Forwarded-For` / `X-Real-IP`（默认 `0`；仅在可信反向代理已正确配置时设为 `1`）
 - `APP_HOST` / `APP_PORT`：后端监听地址与端口（默认 `127.0.0.1:8080`；
   容器内固定监听 `0.0.0.0:8080`）
 - `APP_DATA_DIR`：自定义数据目录（优先级高于面板配置）

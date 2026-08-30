@@ -8,23 +8,52 @@ def test_rate_limiter_basic():
     limiter = InMemoryRateLimiter()
     # 3 hits allowed
     for _ in range(3):
-        limiter.hit(scope="test_scope", key="key1", max_attempts=3, window_seconds=10, block_seconds=60, detail="Rate limit exceeded")
+        limiter.hit(
+            scope="test_scope",
+            key="key1",
+            max_attempts=3,
+            window_seconds=10,
+            block_seconds=60,
+            detail="Rate limit exceeded",
+        )
 
     # 4th hit should trigger 429
     with pytest.raises(Exception) as exc_info:
-        limiter.hit(scope="test_scope", key="key1", max_attempts=3, window_seconds=10, block_seconds=60, detail="Rate limit exceeded")
+        limiter.hit(
+            scope="test_scope",
+            key="key1",
+            max_attempts=3,
+            window_seconds=10,
+            block_seconds=60,
+            detail="Rate limit exceeded",
+        )
     assert exc_info.value.status_code == 429
 
 
 def test_rate_limiter_reset():
     limiter = InMemoryRateLimiter()
-    limiter.hit(scope="test_scope", key="key1", max_attempts=1, window_seconds=10, block_seconds=60, detail="Rate limit exceeded")
+    limiter.hit(
+        scope="test_scope",
+        key="key1",
+        max_attempts=1,
+        window_seconds=10,
+        block_seconds=60,
+        detail="Rate limit exceeded",
+    )
     limiter.reset("test_scope", "key1")
     # should succeed again
-    limiter.hit(scope="test_scope", key="key1", max_attempts=1, window_seconds=10, block_seconds=60, detail="Rate limit exceeded")
+    limiter.hit(
+        scope="test_scope",
+        key="key1",
+        max_attempts=1,
+        window_seconds=10,
+        block_seconds=60,
+        detail="Rate limit exceeded",
+    )
 
 
-def test_get_client_identifier_ip_sanitization():
+def test_get_client_identifier_ip_sanitization(monkeypatch):
+    monkeypatch.setenv("APP_TRUST_PROXY_HEADERS", "1")
     # Valid IP in X-Forwarded-For
     scope = {
         "type": "http",

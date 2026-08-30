@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import math
+import os
 import time
 from collections import deque
 from threading import Lock
@@ -38,16 +39,14 @@ class InMemoryRateLimiter:
         # Prune attempts with no entries or older than 1 hour
         stale_cutoff = now - 3600
         expired_buckets = [
-            b for b, deq in self._attempts.items()
-            if not deq or deq[-1] < stale_cutoff
+            b for b, deq in self._attempts.items() if not deq or deq[-1] < stale_cutoff
         ]
         for b in expired_buckets:
             self._attempts.pop(b, None)
 
         # Prune expired block entries
         expired_blocks = [
-            b for b, blocked_time in self._blocked_until.items()
-            if blocked_time <= now
+            b for b, blocked_time in self._blocked_until.items() if blocked_time <= now
         ]
         for b in expired_blocks:
             self._blocked_until.pop(b, None)
@@ -106,16 +105,23 @@ def _is_valid_ip(val: str) -> bool:
         return False
 
 
-def get_client_identifier(request: Request) -> str:
-    forwarded_for = request.headers.get("x-forwarded-for", "")
-    if forwarded_for:
-        first_hop = forwarded_for.split(",", 1)[0].strip()
-        if _is_valid_ip(first_hop):
-            return first_hop
+def trust_proxy_headers() -> bool:
+    """Whether this deployment explicitly trusts forwarded client IP headers."""
+    value = os.getenv("APP_TRUST_PROXY_HEADERS", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
-    real_ip = request.headers.get("x-real-ip", "").strip()
-    if _is_valid_ip(real_ip):
-        return real_ip
+
+def get_client_identifier(request: Request) -> str:
+    if trust_proxy_headers():
+        forwarded_for = request.headers.get("x-forwarded-for", "")
+        if forwarded_for:
+            first_hop = forwarded_for.split(",", 1)[0].strip()
+            if _is_valid_ip(first_hop):
+                return first_hop
+
+        real_ip = request.headers.get("x-real-ip", "").strip()
+        if _is_valid_ip(real_ip):
+            return real_ip
 
     if request.client and request.client.host and _is_valid_ip(request.client.host):
         return request.client.host
@@ -123,7 +129,9 @@ def get_client_identifier(request: Request) -> str:
 
 
 def compose_rate_limit_key(request: Request, *parts: str) -> str:
-    normalized_parts = [part.strip().lower() for part in parts if isinstance(part, str) and part.strip()]
+    normalized_parts = [
+        part.strip().lower() for part in parts if isinstance(part, str) and part.strip()
+    ]
     return "|".join([get_client_identifier(request), *normalized_parts])
 
 

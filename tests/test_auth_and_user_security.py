@@ -1,9 +1,6 @@
 import time
 from datetime import timedelta
 
-from backend.vendor import pyotp
-from backend.vendor.jose import jwt
-
 from backend.api.routes.user import (
     _cleanup_expired_pending_totp_secrets,
     _set_pending_totp_secret,
@@ -13,6 +10,8 @@ from backend.api.routes.user import (
 from backend.core.auth import create_access_token, verify_totp
 from backend.core.config import get_settings
 from backend.core.security import hash_password, verify_password
+from backend.vendor import pyotp
+from backend.vendor.jose import jwt
 
 
 def test_password_hashing():

@@ -126,6 +126,7 @@ touch /data/.probe && rm /data/.probe
 - `APP_SECRET_KEY`: panel secret key (strongly recommended; auto-generated and persisted if unset)
 - `ADMIN_PASSWORD`: initial password for the `admin` user (recommended; otherwise read
   `/data/.admin_bootstrap_password`)
+- `APP_TRUST_PROXY_HEADERS`: trust `X-Forwarded-For` / `X-Real-IP` (default `0`; set to `1` only behind a correctly configured trusted reverse proxy)
 - `APP_HOST` / `APP_PORT`: backend listen address and port (default `127.0.0.1:8080`;
   the container listens on `0.0.0.0:8080`)
 - `APP_DATA_DIR`: custom data directory (higher priority than the panel setting)

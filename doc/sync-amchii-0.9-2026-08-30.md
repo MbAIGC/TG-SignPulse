@@ -88,8 +88,7 @@
 - `backend/` 存量 ruff E402（模块级 import 不在文件顶部，属面板历史风格债，
   非本次合并引入；`ruff check tg_signer/` 全绿）
 - `webui/`（0.9.0 的 NiceGUI WebUI）未取 —— TG-SignPulse 面板形态不同；
-  0.9.0 的 `docker/` 镜像文件（GHCR.Dockerfile 保留为参考，CI 用我方
-  docker-build-push）
+  生产镜像统一使用仓库根目录 `Dockerfile`，由 `docker-build-push` 工作流构建
 - 0.9.0 `trim_memory` 未补回 CLI（库里保留）
 - `frontend/` 未改动（面板仅通过 backend API 交互，API 签名未变）
 
