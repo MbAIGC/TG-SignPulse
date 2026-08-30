@@ -162,6 +162,13 @@
 - 运行状态和 worker 存活判断新增回归覆盖；
 - 本地完整测试达到 233 项并全部通过。
 
+## TG01 实测账号检查死锁修复
+
+- 根因不是 `TgCrypto` 或 Kurigram 本身：普通 API 任务在账号预检查时重复获取同一 `account_lock`，造成不可重入 `asyncio.Lock` 死锁；
+- 普通运行路径改为由 `check_account_status()` 自行持锁，DB task 已持锁路径显式传递 `lock_already_held=True`；
+- 新增普通 API 与 DB task 两种账号检查锁边界回归测试；
+- 上游 0.9/Kurigram 升级可能让该旧锁边界问题更容易显现，但直接根因已在本项目修复。
+
 ## 风险与暂不纳入本轮
 
 - 真实 Telegram 网络、账号 session、OpenAI 调用不在本地回归范围内。

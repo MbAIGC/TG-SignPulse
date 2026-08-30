@@ -1870,6 +1870,7 @@ class SignTaskService:
         task_name: str,
         no_updates: bool,
         notify_on_failure: bool = True,
+        lock_already_held: bool = False,
     ) -> Optional[str]:
         stored_status = get_account_status(account_name)
         if stored_status.get("status") == "invalid" and stored_status.get(
@@ -1891,6 +1892,7 @@ class SignTaskService:
                 account_name,
                 timeout_seconds=10.0,
                 no_updates=no_updates,
+                lock_already_held=lock_already_held,
             )
         except Exception as e:
             logging.getLogger("backend.sign_tasks").warning(
@@ -3779,15 +3781,15 @@ class SignTaskService:
                     task_name,
                     no_updates=signer_no_updates,
                     notify_on_failure=task_notify_on_failure,
+                    lock_already_held=True,
                 )
             else:
-                async with account_lock:
-                    invalid_reason = await self._check_account_before_task(
-                        account_name,
-                        task_name,
-                        no_updates=signer_no_updates,
-                        notify_on_failure=task_notify_on_failure,
-                    )
+                invalid_reason = await self._check_account_before_task(
+                    account_name,
+                    task_name,
+                    no_updates=signer_no_updates,
+                    notify_on_failure=task_notify_on_failure,
+                )
             if invalid_reason:
                 account_invalid_detected = True
                 error_msg = (

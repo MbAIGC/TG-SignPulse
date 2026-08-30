@@ -93,7 +93,9 @@ class TelegramService:
         source.replace(target)
 
     @staticmethod
-    def _rename_pending_login_records(old_account_name: str, new_account_name: str) -> None:
+    def _rename_pending_login_records(
+        old_account_name: str, new_account_name: str
+    ) -> None:
         for store in (_login_sessions, _qr_login_sessions):
             replacements = []
             for key, value in list(store.items()):
@@ -106,7 +108,9 @@ class TelegramService:
                     if isinstance(key, str) and key.startswith(f"{old_account_name}_")
                     else key
                 )
-                replacements.append((key, next_key, {**value, "account_name": new_account_name}))
+                replacements.append(
+                    (key, next_key, {**value, "account_name": new_account_name})
+                )
 
             for old_key, next_key, next_value in replacements:
                 store.pop(old_key, None)
@@ -275,7 +279,10 @@ class TelegramService:
             proxy_value = profile.get("proxy")
             if not proxy_value:
                 from backend.services.config import get_config_service
-                proxy_value = get_config_service().get_global_settings().get("global_proxy")
+
+                proxy_value = (
+                    get_config_service().get_global_settings().get("global_proxy")
+                )
             if proxy_value:
                 proxy_dict = build_proxy_dict(proxy_value)
         except Exception:
@@ -346,7 +353,10 @@ class TelegramService:
             proxy_value = profile.get("proxy")
             if not proxy_value:
                 from backend.services.config import get_config_service
-                proxy_value = get_config_service().get_global_settings().get("global_proxy")
+
+                proxy_value = (
+                    get_config_service().get_global_settings().get("global_proxy")
+                )
             if proxy_value:
                 proxy_dict = build_proxy_dict(proxy_value)
         except Exception:
@@ -376,16 +386,12 @@ class TelegramService:
             lock = get_account_lock(account_name)
             async with lock:
                 async with client:
-                    chat = await asyncio.wait_for(
-                        client.get_chat(chat_id), timeout=10
-                    )
+                    chat = await asyncio.wait_for(client.get_chat(chat_id), timeout=10)
                     if not chat or not getattr(chat, "photo", None):
                         return None
 
                     photo_bytes = await asyncio.wait_for(
-                        client.download_media(
-                            chat.photo.small_file_id, in_memory=True
-                        ),
+                        client.download_media(chat.photo.small_file_id, in_memory=True),
                         timeout=15,
                     )
                     if photo_bytes:
@@ -408,6 +414,7 @@ class TelegramService:
         account_name: str,
         timeout_seconds: float = 8.0,
         no_updates: bool = True,
+        lock_already_held: bool = False,
     ) -> Dict[str, Any]:
         """
         检测账号 session 是否可用。
@@ -440,8 +447,8 @@ class TelegramService:
             if not proxy_value:
                 from backend.services.config import get_config_service
 
-                proxy_value = get_config_service().get_global_settings().get(
-                    "global_proxy"
+                proxy_value = (
+                    get_config_service().get_global_settings().get("global_proxy")
                 )
             if proxy_value:
                 proxy_dict = build_proxy_dict(proxy_value)
@@ -499,9 +506,12 @@ class TelegramService:
         try:
             # Reuse shared clients with proper ref-counting context manager.
             lock = get_account_lock(account_name)
-            async with lock:
+            lock_context = contextlib.nullcontext() if lock_already_held else lock
+            async with lock_context:
                 async with client:
-                    me = await asyncio.wait_for(client.get_me(), timeout=timeout_seconds)
+                    me = await asyncio.wait_for(
+                        client.get_me(), timeout=timeout_seconds
+                    )
             set_account_status(
                 account_name,
                 status="connected",
@@ -736,7 +746,9 @@ class TelegramService:
 
         accounts = self.list_accounts(force_refresh=True)
         existing_by_lower = {
-            str(item.get("name") or "").strip().lower(): str(item.get("name") or "").strip()
+            str(item.get("name") or "").strip().lower(): str(
+                item.get("name") or ""
+            ).strip()
             for item in accounts
             if str(item.get("name") or "").strip()
         }
@@ -1090,7 +1102,10 @@ class TelegramService:
             nonlocal proxy
             if not proxy:
                 from backend.services.config import get_config_service
-                global_proxy = get_config_service().get_global_settings().get("global_proxy")
+
+                global_proxy = (
+                    get_config_service().get_global_settings().get("global_proxy")
+                )
                 if global_proxy:
                     proxy = global_proxy
             if proxy:
@@ -1246,7 +1261,9 @@ class TelegramService:
             if session_string:
                 try:
                     set_account_session_string(account_name, session_string)
-                    save_session_string_file(self.session_dir, account_name, session_string)
+                    save_session_string_file(
+                        self.session_dir, account_name, session_string
+                    )
                     set_account_status(
                         account_name,
                         status="connected",
@@ -1258,7 +1275,10 @@ class TelegramService:
                     pass
         if not proxy:
             from backend.services.config import get_config_service
-            global_proxy = get_config_service().get_global_settings().get("global_proxy")
+
+            global_proxy = (
+                get_config_service().get_global_settings().get("global_proxy")
+            )
             if global_proxy:
                 proxy = global_proxy
         if proxy:
@@ -1310,7 +1330,9 @@ class TelegramService:
         except Exception:
             pass
 
-    async def _cleanup_qr_login(self, login_id: str, preserve_session: bool = False) -> None:
+    async def _cleanup_qr_login(
+        self, login_id: str, preserve_session: bool = False
+    ) -> None:
         data = _qr_login_sessions.pop(login_id, None)
         if not data:
             return
@@ -1352,7 +1374,11 @@ class TelegramService:
                     if session_file.exists():
                         try:
                             session_file.unlink()
-                            for ext in [".session-journal", ".session-wal", ".session-shm"]:
+                            for ext in [
+                                ".session-journal",
+                                ".session-wal",
+                                ".session-shm",
+                            ]:
                                 aux_file = self.session_dir / f"{account_name}{ext}"
                                 if aux_file.exists():
                                     aux_file.unlink()
@@ -1499,9 +1525,9 @@ class TelegramService:
             token_expires = getattr(result, "expires", None)
             expires_ts = self._normalize_login_token_expires(token_expires)
             expires_at = utc_from_timestamp_iso_z(expires_ts)
-            qr_uri = "tg://login?token=" + base64.urlsafe_b64encode(
-                token_bytes
-            ).decode("utf-8")
+            qr_uri = "tg://login?token=" + base64.urlsafe_b64encode(token_bytes).decode(
+                "utf-8"
+            )
 
             login_id = secrets.token_urlsafe(16)
 
@@ -1539,7 +1565,10 @@ class TelegramService:
                     if not isinstance(update, raw.types.UpdateLoginToken):
                         return
                     data = _qr_login_sessions.get(login_id)
-                    if data and data.get("status") in ("waiting_scan", "scanned_wait_confirm"):
+                    if data and data.get("status") in (
+                        "waiting_scan",
+                        "scanned_wait_confirm",
+                    ):
                         new_token = getattr(update, "token", None)
                         if new_token:
                             data["token"] = new_token
@@ -1787,8 +1816,12 @@ class TelegramService:
                                 from backend.services.config import get_config_service
 
                                 tg_config = get_config_service().get_telegram_config()
-                                api_id = os.getenv("TG_API_ID") or tg_config.get("api_id")
-                                api_hash = os.getenv("TG_API_HASH") or tg_config.get("api_hash")
+                                api_id = os.getenv("TG_API_ID") or tg_config.get(
+                                    "api_id"
+                                )
+                                api_hash = os.getenv("TG_API_HASH") or tg_config.get(
+                                    "api_hash"
+                                )
                                 try:
                                     api_id = int(api_id) if api_id is not None else None
                                 except (TypeError, ValueError):
@@ -1810,24 +1843,37 @@ class TelegramService:
                                         api_id=api_id, api_hash=api_hash, except_ids=[]
                                     )
                                 )
-                                if isinstance(export_result, raw.types.auth.LoginTokenSuccess):
+                                if isinstance(
+                                    export_result, raw.types.auth.LoginTokenSuccess
+                                ):
                                     return await _finalize_login(export_result)
-                                if isinstance(export_result, raw.types.auth.LoginTokenMigrateTo):
+                                if isinstance(
+                                    export_result, raw.types.auth.LoginTokenMigrateTo
+                                ):
                                     data["migrate_dc_id"] = export_result.dc_id
                                     data["token"] = export_result.token
                                     try:
-                                        session = await get_session(client, export_result.dc_id)
+                                        session = await get_session(
+                                            client, export_result.dc_id
+                                        )
                                         self._capture_migrate_auth(data, session)
                                         migrate_result = await session.invoke(
-                                            raw.functions.auth.ImportLoginToken(token=export_result.token)
+                                            raw.functions.auth.ImportLoginToken(
+                                                token=export_result.token
+                                            )
                                         )
-                                        if isinstance(migrate_result, raw.types.auth.LoginTokenSuccess):
+                                        if isinstance(
+                                            migrate_result,
+                                            raw.types.auth.LoginTokenSuccess,
+                                        ):
                                             return await _finalize_login(migrate_result)
                                     except SessionPasswordNeeded:
                                         data["status"] = "password_required"
                                         data["scan_seen"] = True
                                         self._extend_qr_expires(data)
-                                        self._log_qr_state(login_id, "password_required", data)
+                                        self._log_qr_state(
+                                            login_id, "password_required", data
+                                        )
                                         return {
                                             "status": "password_required",
                                             "expires_at": data.get("expires_at"),
@@ -1835,11 +1881,17 @@ class TelegramService:
                                         }
                                     except Exception:
                                         pass
-                                elif isinstance(export_result, raw.types.auth.LoginToken):
-                                    token_expires = getattr(export_result, "expires", None)
+                                elif isinstance(
+                                    export_result, raw.types.auth.LoginToken
+                                ):
+                                    token_expires = getattr(
+                                        export_result, "expires", None
+                                    )
                                     if token_expires:
-                                        data["expires_ts"] = self._normalize_login_token_expires(
-                                            token_expires
+                                        data["expires_ts"] = (
+                                            self._normalize_login_token_expires(
+                                                token_expires
+                                            )
                                         )
                                         data["expires_at"] = utc_from_timestamp_iso_z(
                                             data["expires_ts"]
@@ -1942,7 +1994,9 @@ class TelegramService:
                     auth = await session.invoke(
                         raw.functions.auth.CheckPassword(
                             password=compute_password_check(
-                                await session.invoke(raw.functions.account.GetPassword()),
+                                await session.invoke(
+                                    raw.functions.account.GetPassword()
+                                ),
                                 password,
                             )
                         )
@@ -2022,7 +2076,9 @@ class TelegramService:
                                         raw.functions.auth.ImportLoginToken(token=token)
                                     )
 
-                                if isinstance(result, raw.types.auth.LoginTokenMigrateTo):
+                                if isinstance(
+                                    result, raw.types.auth.LoginTokenMigrateTo
+                                ):
                                     migrate_dc_id = result.dc_id
                                     token = result.token
                                     data["migrate_dc_id"] = migrate_dc_id
@@ -2138,7 +2194,9 @@ class TelegramService:
                                 token_expires = getattr(export_result, "expires", None)
                                 if token_expires:
                                     data["expires_ts"] = (
-                                        self._normalize_login_token_expires(token_expires)
+                                        self._normalize_login_token_expires(
+                                            token_expires
+                                        )
                                     )
                                     data["expires_at"] = utc_from_timestamp_iso_z(
                                         data["expires_ts"]
@@ -2223,7 +2281,9 @@ class TelegramService:
                         except Exception:
                             password_state = None
 
-                        if password_state and getattr(password_state, "has_password", False):
+                        if password_state and getattr(
+                            password_state, "has_password", False
+                        ):
                             return await _finalize_password_login(user)
 
                         await self._apply_migrate_auth(client, data)
@@ -2247,7 +2307,11 @@ class TelegramService:
                     try:
                         accounts = self.list_accounts(force_refresh=True)
                         account = next(
-                            (acc for acc in accounts if acc.get("name") == account_name),
+                            (
+                                acc
+                                for acc in accounts
+                                if acc.get("name") == account_name
+                            ),
                             None,
                         )
                     except Exception:
@@ -2268,7 +2332,10 @@ class TelegramService:
             await self._cleanup_qr_login(login_id)
             raise ValueError(f"请求过于频繁，请等待 {e.value} 秒后重试")
         except Unauthorized:
-            if data and data.get("status") in {"password_required", "scanned_wait_confirm"}:
+            if data and data.get("status") in {
+                "password_required",
+                "scanned_wait_confirm",
+            }:
                 self._extend_qr_expires(data)
                 raise ValueError("请先在手机端确认登录")
             await self._cleanup_qr_login(login_id)
@@ -2276,7 +2343,10 @@ class TelegramService:
         except ValueError:
             raise
         except Exception:
-            if data and data.get("status") in {"password_required", "scanned_wait_confirm"}:
+            if data and data.get("status") in {
+                "password_required",
+                "scanned_wait_confirm",
+            }:
                 self._extend_qr_expires(data)
                 raise ValueError("登录失败，请重试")
             await self._cleanup_qr_login(login_id)
