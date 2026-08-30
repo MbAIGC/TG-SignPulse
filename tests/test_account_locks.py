@@ -6,6 +6,8 @@
 - locked() 只反映进程内占用状态（不误判跨进程占用）
 - 跨协程 acquire+release 配对（login/QR 流程依赖）
 - 启用文件锁后：进程内互斥 + 跨进程互斥（flock 同 fd）
+- 文件锁获取超时（ACCOUNT_LOCK_TIMEOUT -> AccountLockTimeout）
+- 文件锁获取可响应协程取消
 """
 
 import asyncio
@@ -16,7 +18,11 @@ from pathlib import Path
 import pytest
 
 from backend.utils import account_locks
-from backend.utils.account_locks import AccountLock, get_account_lock
+from backend.utils.account_locks import (
+    AccountLock,
+    AccountLockTimeout,
+    get_account_lock,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +32,7 @@ def _reset_lock_state(monkeypatch):
     account_locks._ACCOUNT_LOCKS.clear()
     account_locks._LOCK_DIR = None
     monkeypatch.delenv("ACCOUNT_LOCK_FILE", raising=False)
+    monkeypatch.delenv("ACCOUNT_LOCK_TIMEOUT", raising=False)
 
 
 def test_get_account_lock_singleton():
@@ -145,3 +152,80 @@ def test_locked_only_reflects_inprocess_when_file_lock_disabled(tmp_path):
         assert not lock.locked()
 
     asyncio.run(main())
+
+
+def _spawn_holder(lock_file: Path, hold_seconds: float, ready_file: Path):
+    """子进程阻塞持有 flock(LOCK_EX)，持有后写就绪标记，用于模拟另一进程占用锁。"""
+    code = (
+        "import fcntl,os,sys,time\n"
+        "fd=os.open(sys.argv[1], os.O_RDWR|os.O_CREAT, 0o600)\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+        "open(sys.argv[3], 'w').write('ready')\n"
+        "time.sleep(float(sys.argv[2]))\n"
+    )
+    return subprocess.Popen(
+        [sys.executable, "-c", code, str(lock_file), str(hold_seconds), str(ready_file)],
+    )
+
+
+def _wait_ready(ready_file: Path, timeout: float = 5.0) -> None:
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while not ready_file.exists():
+        if _time.monotonic() > deadline:
+            raise TimeoutError("holder 未在限定时间内就绪")
+        _time.sleep(0.02)
+
+
+def test_file_lock_acquire_times_out_when_held_elsewhere(monkeypatch, tmp_path):
+    """另一进程长期持锁时，获取应在 ACCOUNT_LOCK_TIMEOUT 后抛 AccountLockTimeout。"""
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir(exist_ok=True)
+    account_locks._LOCK_DIR = lock_dir
+    monkeypatch.setenv("ACCOUNT_LOCK_TIMEOUT", "0.3")
+
+    lock = AccountLock("acct_timeout", lock_dir=lock_dir)
+    ready_file = tmp_path / "holder_ready_timeout"
+    holder = _spawn_holder(lock._lock_path, hold_seconds=5.0, ready_file=ready_file)
+    try:
+        _wait_ready(ready_file)
+
+        async def main():
+            with pytest.raises(AccountLockTimeout) as exc_info:
+                await lock.acquire()
+            assert "acct_timeout" in str(exc_info.value)
+            # 超时后进程内锁必须已释放（不残留）
+            assert not lock.locked()
+
+        asyncio.run(main())
+    finally:
+        holder.terminate()
+        holder.wait(timeout=5)
+
+
+def test_file_lock_acquire_cancellable(monkeypatch, tmp_path):
+    """文件锁轮询期间协程被取消：应传播 CancelledError 且释放进程内锁。"""
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir(exist_ok=True)
+    account_locks._LOCK_DIR = lock_dir
+    monkeypatch.setenv("ACCOUNT_LOCK_TIMEOUT", "30")
+
+    lock = AccountLock("acct_cancel", lock_dir=lock_dir)
+    ready_file = tmp_path / "holder_ready_cancel"
+    holder = _spawn_holder(lock._lock_path, hold_seconds=5.0, ready_file=ready_file)
+    try:
+        _wait_ready(ready_file)
+
+        async def main():
+            acquire_task = asyncio.create_task(lock.acquire())
+            await asyncio.sleep(0.2)  # 让 acquire 进入文件锁轮询
+            acquire_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await acquire_task
+            assert not lock.locked()  # 进程内锁已释放
+
+        asyncio.run(main())
+    finally:
+        holder.terminate()
+        holder.wait(timeout=5)

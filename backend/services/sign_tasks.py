@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import socket
 import time
 import traceback
 import uuid
@@ -3056,6 +3057,11 @@ class SignTaskService:
         """
         return await self.run_task_with_logs(account_name, task_name)
 
+    @staticmethod
+    def _current_worker_id() -> str:
+        """当前进程标识：pid@hostname，与 DB task 的 TaskLog.worker_id 对齐。"""
+        return f"{os.getpid()}@{socket.gethostname()}"
+
     def _task_key(self, account_name: str, task_name: str) -> tuple[str, str]:
         return account_name, task_name
 
@@ -3156,6 +3162,9 @@ class SignTaskService:
             "output": str(output or ""),
             "started_at": started_at or utc_now_iso(),
             "finished_at": finished_at,
+            # 执行进程标识（pid@hostname），与 DB task 的 TaskLog.worker_id 对齐，
+            # 便于多 worker 部署排查同账号并发执行来源。
+            "worker_id": self._current_worker_id(),
             # 额外冗余字段，便于磁盘恢复时重建 key
             "account_name": account_name,
             "task_name": task_name,

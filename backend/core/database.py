@@ -64,7 +64,9 @@ def get_db():
 def ensure_schema_upgrades() -> None:
     """幂等补齐轻量 schema 演进（create_all 不会为已存在表加列）。
 
-    目前仅需：task_logs.run_id（每次运行唯一 run_id 的可追溯列）。
+    当前演进：
+    - task_logs.run_id：每次运行唯一 run_id 的可追溯列；
+    - task_logs.worker_id：执行进程标识（多 worker 排查并发来源）。
     """
     engine = get_engine()
     try:
@@ -72,10 +74,14 @@ def ensure_schema_upgrades() -> None:
         if "task_logs" not in inspector.get_table_names():
             return
         columns = {col["name"] for col in inspector.get_columns("task_logs")}
-        if "run_id" not in columns:
-            with engine.begin() as conn:
+        with engine.begin() as conn:
+            if "run_id" not in columns:
                 conn.exec_driver_sql(
                     "ALTER TABLE task_logs ADD COLUMN run_id VARCHAR(32)"
+                )
+            if "worker_id" not in columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE task_logs ADD COLUMN worker_id VARCHAR(64)"
                 )
     except Exception as e:  # pragma: no cover - 迁移失败不阻断启动
         import logging

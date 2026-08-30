@@ -64,7 +64,7 @@ docker run -d \
   -p 8080:8080 \
   -v $(pwd)/data:/data \
   -e TZ=Asia/Shanghai \
-  -e APP_SECRET_KEY=your_secret_key \
+  -e APP_SECRET_KEY="$(openssl rand -hex 32)" \
   ghcr.io/mbaigc/tg-signpulse:latest
 ```
 
@@ -88,7 +88,9 @@ services:
       - ./data:/data
     environment:
       - TZ=Asia/Shanghai
-      - APP_SECRET_KEY=your_secret_key
+      # 必填：至少 32 字符的随机密钥（生成：openssl rand -hex 32）。
+      # 未设置时自动生成并持久化到 /data/.app_secret_key。
+      - APP_SECRET_KEY=<your-32+char-random-secret>
 ```
 
 ```bash
@@ -132,6 +134,10 @@ touch /data/.probe && rm /data/.probe
 - `TG_SESSION_MODE`：`file`（默认）或 `string`
 - `TG_SESSION_NO_UPDATES`：设 `1` 启用 `no_updates`（仅 `string` 模式）
 - `TG_GLOBAL_CONCURRENCY`：全局并发数（默认 `1`）
+- `ACCOUNT_LOCK_FILE`：账号级跨进程执行锁。`1` 开启（多 worker/多进程部署必需，
+  文件锁位于 `<workdir>/locks/`），`0` 关闭（默认仅进程内锁；Docker 部署默认开启）
+- `ACCOUNT_LOCK_TIMEOUT`：跨进程锁获取超时秒数（默认 `30`，超时抛
+  `AccountLockTimeout` 并跳过任务，不会无限阻塞）
 - `APP_TOTP_VALID_WINDOW`：面板 2FA 容错窗口
 
 ## 自定义数据目录

@@ -65,7 +65,7 @@ docker run -d \
   -p 8080:8080 \
   -v $(pwd)/data:/data \
   -e TZ=Asia/Shanghai \
-  -e APP_SECRET_KEY=your_secret_key \
+  -e APP_SECRET_KEY="$(openssl rand -hex 32)" \
   ghcr.io/mbaigc/tg-signpulse:latest
 ```
 
@@ -89,7 +89,9 @@ services:
       - ./data:/data
     environment:
       - TZ=Asia/Shanghai
-      - APP_SECRET_KEY=your_secret_key
+      # Required: a random secret of at least 32 chars (generate: openssl rand -hex 32).
+      # If unset, one is auto-generated and persisted to /data/.app_secret_key.
+      - APP_SECRET_KEY=<your-32+char-random-secret>
 ```
 
 ```bash
@@ -136,6 +138,11 @@ touch /data/.probe && rm /data/.probe
 - `TG_SESSION_MODE`: `file` (default) or `string`
 - `TG_SESSION_NO_UPDATES`: set `1` to enable `no_updates` (`string` mode only)
 - `TG_GLOBAL_CONCURRENCY`: global concurrency limit (default `1`)
+- `ACCOUNT_LOCK_FILE`: per-account cross-process execution lock. `1` enables it
+  (required for multi-worker/multi-process deployments; lock files live in
+  `<workdir>/locks/`), `0` disables it (default is in-process only; Docker enables it by default)
+- `ACCOUNT_LOCK_TIMEOUT`: cross-process lock acquisition timeout in seconds
+  (default `30`; on timeout the task is skipped with `AccountLockTimeout`, never blocks forever)
 - `APP_TOTP_VALID_WINDOW`: panel 2FA tolerance window
 
 ## Custom Data Directory

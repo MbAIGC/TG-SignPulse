@@ -123,8 +123,27 @@ def get_default_secret_key(env: Mapping[str, str] | None = None) -> str:
     generated = secrets.token_urlsafe(48)
     try:
         secret_file.write_text(generated, encoding="utf-8")
+        # 密钥文件权限收紧为 0600，避免同宿主其他用户读取
+        try:
+            os.chmod(secret_file, 0o600)
+        except OSError:
+            pass
     except OSError:
-        pass
+        # 生产模式下密钥未持久化 = 重启后所有旧 JWT 失效，必须拒绝启动；
+        # 开发模式下则降级为可用的随机值但记录明显告警。
+        env_prod = str(env_map.get("APP_ENV", "")).strip().lower()
+        is_production = env_prod in ("production", "prod")
+        if is_production:
+            raise RuntimeError(
+                "无法把自动生成的 JWT 密钥持久化到 %s：请确保该路径可写，"
+                "或显式设置 APP_SECRET_KEY（openssl rand -hex 32），否则重启后旧令牌将全部失效。"
+                % secret_file
+            )
+        print(
+            "[config] 警告：JWT 密钥无法写入 %s，当前进程可用，但重启后密钥将变化、旧令牌失效。"
+            % secret_file,
+            flush=True,
+        )
     return generated
 
 

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -244,6 +246,38 @@ def test_weak_secret_key_rejected():
     # 强密钥与自动生成不受影响
     strong = "x" * 40
     assert get_default_secret_key({"APP_SECRET_KEY": strong}) == strong
+
+
+def test_auto_generated_secret_key_0600_and_production_write_failure(monkeypatch, tmp_path):
+    """修复 5.1：自动生成的密钥文件权限为 0600；生产模式写失败必须拒绝启动。"""
+    from backend.core.config import get_default_secret_key
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(exist_ok=True)
+
+    # 1) 正常生成：文件存在、密钥足够长、权限 0600
+    key = get_default_secret_key({"APP_DATA_DIR": str(data_dir)})
+    secret_file = data_dir / ".app_secret_key"
+    assert secret_file.exists()
+    assert len(key) >= 32
+    if hasattr(secret_file, "stat") and hasattr(secret_file.stat(), "st_mode"):
+        assert secret_file.stat().st_mode & 0o777 == 0o600
+
+    # 2) 生产模式写失败：必须抛 RuntimeError（防止重启后旧 JWT 全部失效）
+    data_dir2 = tmp_path / "data2"
+    data_dir2.mkdir(exist_ok=True)
+
+    def _boom_write(path, *a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", _boom_write)
+    with pytest.raises(RuntimeError):
+        get_default_secret_key({"APP_DATA_DIR": str(data_dir2), "APP_ENV": "production"})
+
+    # 3) 开发/默认模式写失败：降级为随机值且不抛异常（仍返回可用密钥）
+    data_dir3 = tmp_path / "data3"
+    data_dir3.mkdir(exist_ok=True)
+    assert len(get_default_secret_key({"APP_DATA_DIR": str(data_dir3)})) >= 32
 
 
 def test_session_string_file_permissions_0o600(monkeypatch, tmp_path):

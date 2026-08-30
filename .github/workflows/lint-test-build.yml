@@ -53,9 +53,10 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+        # 显式包含 dev 依赖（vue-tsc 等构建工具），避免环境默认 omit=dev 导致构建失败
+        run: npm ci --include=dev --no-audit --no-fund
 
       - name: Production build
+        # 生产构建不需要 NODE_ENV=development；vite build 默认以生产模式打包，
+        # 移除该变量避免「生产构建 + development 环境」语义冲突。
         run: npm run build
-        env:
-          NODE_ENV: development

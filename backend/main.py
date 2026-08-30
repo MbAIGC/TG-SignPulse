@@ -75,6 +75,19 @@ async def _startup() -> None:
         ensure_admin(db)
     await init_scheduler(sync_on_startup=False)
 
+    # 账号级执行锁模式：单进程默认仅进程内锁；多 worker/多进程部署
+    # 建议设置 ACCOUNT_LOCK_FILE=1 启用跨进程文件锁（见 doc/fix-plan 与 README）。
+    from backend.utils.account_locks import get_lock_dir, is_file_lock_enabled
+
+    if is_file_lock_enabled():
+        logging.getLogger("backend.startup").info(
+            "账号级执行锁：跨进程文件锁已启用（目录=%s）", get_lock_dir()
+        )
+    else:
+        logging.getLogger("backend.startup").info(
+            "账号级执行锁：仅进程内锁（多 worker/多进程部署请设置 ACCOUNT_LOCK_FILE=1）"
+        )
+
     # Pre-export session strings from .session files to avoid SQLite locks during task execution
     _pre_export_session_strings()
 

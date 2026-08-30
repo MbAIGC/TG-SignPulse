@@ -29,7 +29,7 @@
 | 2 | P1 | `tg_signer/core.py` `get_dialogs` | `app.get_dialogs(limit=100)` 硬限制对话数（L1228）；L1990 无 limit | 存在 | 面板侧保留 limit 参数化，不在库层硬编码 |
 | 3 | P1 | `backend/core/rate_limit.py` | 无效 IP 回退 `"unknown"` 使所有无头/无效 IP 共享同一限流桶，可被滥用 | 存在（L109+） | 无效 IP 单独命名空间或拒绝，避免共享桶 |
 | 4 | P1 | `backend/api/routes/auth.py` `reset_totp` | 未配置 `APP_EMERGENCY_RESET_KEY` 时 API 一律 403 | 存在（L194-199） | 属有意的安全设计，**保留**；文档注明 CLI 兜底 `reset-totp` |
-| 5 | P1 | `backend/utils/tg_session.py` | 账号级并发锁仍是单进程 `threading.Lock` | 存在 | 迁移到 `AccountLock`（跨进程），与修 9 对齐 |
+| 5 | P1 | `backend/utils/tg_session.py` | 账号级并发锁仍是单进程 `threading.Lock` | 外层执行互斥已闭环：DB task（3.1）与 SignTask 均持有 `AccountLock`（跨进程文件锁）；`tg_session` 内部 `threading.Lock` 仅保护进程内 session store 内存读写，无需跨进程 | 保持现状；如未来改为进程间共享 store 再评估 |
 | 6 | P2 | `tg_signer/utils.py` `atomic_write_json` | `os.replace` 会重置文件权限为 0644，可能暴露敏感信息 | 存在 | 写前记录原权限，replace 后恢复 |
 | 7 | P2 | `backend/core/database.py` | `PRAGMA cache_size=-64000`（64MB 页）× QueuePool 多连接并发 → 页缓存峰值可达 ~960MB | 存在 | 评估 `cache_size` 与连接池上限，必要时降级 |
 | 8 | P2 | `tests/test_routes_security.py` | 用真实 DB（`get_engine()`）未隔离，测试污染共享数据 | 存在 | 隔离到临时 DB fixture |
@@ -56,3 +56,32 @@
 
 推荐 observer 接收运行过程（`on_action` / `on_message` / `on_finished`），
 使下一次同步上游 0.10 时减少 `core.py` 冲突（详见 `doc/review-upstream-0.9-optimization.md` §6.2）。
+
+## 5. DB task 子进程依赖评估（修 8）
+
+> 背景：`GPT-review-20260630-followup.md` §3.1/5.2/8 指出，legacy DB task
+> 走 `APScheduler -> run_task_once -> async_run_task_cli -> tg-signer 子进程`，
+> 与进程内 SignTask 是两套执行路径。
+
+**已落地（本次）**：
+- `run_task_once` 已按 `account.account_name` 获取并持有统一 `AccountLock`，
+  覆盖「创建运行记录 -> 启动子进程 -> 等待完成」完整区间（`_run_task_once_locked`），
+  与 SignTask 路径共享同一把锁 → 同账号并发已被进程内 + 跨进程文件锁阻断。
+- 锁超时（`AccountLockTimeout`）写入失败记录（含 `worker_id`），不静默跳过。
+- `TaskLog` 与 SignTask 运行状态均已携带 `worker_id`（pid@hostname），
+  多 worker 可排查并发来源。
+
+**现状评估**：
+- DB task 子进程与 SignTask 进程内执行现在**互斥正确**，安全性已达标；
+  子进程路径仍保留（继承的 `Task`/`TaskLog` 记录源 + CLI 兼容），但不再是并发风险源。
+- 主要成本是子进程开销（每次 `tg-signer run` 起一个进程、重新载入 session），
+  以及日志/回调通过 stdout 管道传输的间接性。
+
+**收敛方向（后续迭代，未在本轮执行）**：
+1. 让 `_job_run_task`（DB task）改为调用进程内 `SignTaskService.run_task_with_logs`，
+   CLI 子进程仅保留为命令行兼容入口（`tg-signer run`）。
+2. 统一 DB task 与 SignTask 的状态机为同一持久化状态机（run_id/state/started/finished/worker_id）。
+3. 逐步弃用 `backend/models/task.py` 的布尔内存状态，统一到磁盘/DB 状态。
+
+> 未执行原因：进程内化会改变日志捕获格式、`num_of_dialogs` 语义与 TaskLog 回写逻辑，
+> 属行为级重构，需在后续迭代配合回归矩阵验证后单独推进；当前互斥已由 AccountLock 闭环。

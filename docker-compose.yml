@@ -15,6 +15,9 @@ services:
       - APP_SECRET_KEY=${APP_SECRET_KEY:-}
       # 可选：首次启动时预设管理员密码（不设置则密码写入 /data/.admin_bootstrap_password）
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      # 跨进程账号级执行锁：默认开启（多 worker/多进程部署必需）。
+      # 单进程部署可设为 0 关闭以省去文件锁开销。
+      - ACCOUNT_LOCK_FILE=${ACCOUNT_LOCK_FILE:-1}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
       interval: 30s

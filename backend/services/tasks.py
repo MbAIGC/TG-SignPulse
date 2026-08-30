@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import socket
 import uuid
 from datetime import timedelta
 from pathlib import Path
@@ -14,6 +16,7 @@ from backend.core.config import get_settings
 from backend.models.account import Account
 from backend.models.task import Task
 from backend.models.task_log import TaskLog
+from backend.utils.account_locks import AccountLockTimeout, get_account_lock
 from backend.utils.time import utc_now_naive
 from tg_signer.async_utils import create_logged_task
 
@@ -24,6 +27,11 @@ logger = logging.getLogger(__name__)
 # 用于实时日志推送的状态跟踪
 _active_tasks: dict[int, bool] = {}
 _active_logs: dict[int, list[str]] = {}
+
+
+def _current_worker_id() -> str:
+    """当前进程标识：pid@hostname，便于多 worker 排查并发来源。"""
+    return f"{os.getpid()}@{socket.gethostname()}"
 
 
 def get_active_logs(task_id: int) -> list[str]:
@@ -136,6 +144,40 @@ async def run_task_once(db: Session, task: Task) -> TaskLog:
         return last_log
 
     account: Account = task.account  # type: ignore[assignment]
+
+    # 账号级互斥：与进程内 SignTask/Telegram 流程共享同一把锁，
+    # 覆盖「创建运行记录 -> 启动子进程 -> 等待完成」完整区间，
+    # 避免同账号 DB task 与 SignTask 同时执行（跨进程由文件锁保证）。
+    account_lock = get_account_lock(account.account_name)
+    try:
+        async with account_lock:
+            return await _run_task_once_locked(db, task, account)
+    except AccountLockTimeout as e:
+        logger.warning("任务 %s (账号 %s) 跳过：%s", task.id, account.account_name, e)
+        return _lock_timeout_task_log(db, task, str(e))
+
+
+def _lock_timeout_task_log(db: Session, task: Task, reason: str) -> TaskLog:
+    """锁超时时写入一条失败记录，避免任务静默跳过且无迹可查。"""
+    task_log = TaskLog(
+        task_id=task.id,
+        run_id=uuid.uuid4().hex,
+        worker_id=_current_worker_id(),
+        status="failed",
+        log_path=None,
+        output=f"Account lock timeout: {reason}"[-1000:],
+        started_at=utc_now_naive(),
+        finished_at=utc_now_naive(),
+    )
+    db.add(task_log)
+    db.commit()
+    db.refresh(task_log)
+    return task_log
+
+
+async def _run_task_once_locked(
+    db: Session, task: Task, account: Account
+) -> TaskLog:
     log_file = _create_log_file(task)
 
     _active_tasks[task.id] = True
@@ -144,6 +186,7 @@ async def run_task_once(db: Session, task: Task) -> TaskLog:
     task_log = TaskLog(
         task_id=task.id,
         run_id=uuid.uuid4().hex,
+        worker_id=_current_worker_id(),
         status="running",
         log_path=str(log_file),
         started_at=utc_now_naive(),
