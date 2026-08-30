@@ -38,9 +38,11 @@
 ## 3. 同步流程（每次上游升级必做）
 
 1. 对照 §1 逐模块重跑裁决，更新差异列。
-2. 处理 §2 中标记「本次同步前需处理」的 P1（至少 #1 SPA 穿越、#5 tg_session 锁）。
+2. 处理 §2 中标记「本次同步前需处理」的 P1（至少 #1 SPA 穿越；#5 tg_session 锁
+   外层执行互斥已闭环，无需再处理）。
 3. 全量回归：`pytest tests -o addopts="-W=ignore::DeprecationWarning:pyrogram.utils"`
-   + `ruff check backend/ tg_signer/` + 前端 `NODE_ENV=development npm run build`。
+   + `ruff check backend/ tg_signer/` + 前端
+   `npm ci --include=dev --no-audit --no-fund && npm run build`（生产构建，无需 NODE_ENV）。
 4. 更新 `doc/sync-amchii-*.md` 同步记录与 README 更新日志。
 
 ## 4. 面板 adapter 分层目标（0.10 减冲突）
@@ -59,7 +61,7 @@
 
 ## 5. DB task 子进程依赖评估（修 8）
 
-> 背景：`GPT-review-20260630-followup.md` §3.1/5.2/8 指出，legacy DB task
+> 背景：`第二轮GPT-review.md` §3.1/5.2/8 指出，legacy DB task
 > 走 `APScheduler -> run_task_once -> async_run_task_cli -> tg-signer 子进程`，
 > 与进程内 SignTask 是两套执行路径。
 
