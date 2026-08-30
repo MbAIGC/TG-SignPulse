@@ -122,7 +122,7 @@ def test_totp_reset_requires_password(client_with_user):
 
 
 def test_login_flow_with_and_without_2fa(client_with_user):
-    import pyotp
+    from backend.vendor import pyotp
     client, headers, user, db = client_with_user
 
     # 1. Login without 2FA
