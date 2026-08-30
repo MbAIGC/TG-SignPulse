@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import logging
 import sqlite3
 from contextlib import asynccontextmanager
@@ -51,20 +52,52 @@ from tg_signer.async_utils import create_logged_task  # noqa: E402
 # isort: on
 
 
-# Silence /health check logs
-class HealthCheckFilter(logging.Filter):
+# Silence health checks and redact client addresses from access logs.
+class AccessLogPrivacyFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        return (
-            "/health" not in msg
-            and "/healthz" not in msg
-            and "/readyz" not in msg
-        )
+        message = record.getMessage()
+        if any(path in message for path in ("/health", "/healthz", "/readyz")):
+            return False
+
+        client = getattr(record, "client_addr", None)
+        if client:
+            record.client_addr = _redact_client_address(str(client))
+        else:
+            # Uvicorn's default formatter may render the address positionally.
+            record.args = tuple(
+                _redact_client_address(str(arg)) if _looks_like_address(arg) else arg
+                for arg in record.args
+            )
+        return True
 
 
-logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+def _looks_like_address(value: object) -> bool:
+    try:
+        ipaddress.ip_address(str(value).split(":", 1)[0].strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+
+def _redact_client_address(value: str) -> str:
+    host, separator, port = value.rpartition(":")
+    if separator and port.isdigit() and _looks_like_address(host):
+        return f"{_redact_client_address(host)}:{port}"
+    try:
+        address = ipaddress.ip_address(value.strip("[]"))
+    except ValueError:
+        return "<redacted>"
+    if address.version == 4:
+        octets = value.split(".")
+        return ".".join(octets[:2] + ["x", "x"])
+    groups = address.exploded.split(":")
+    return ":".join(groups[:2] + ["x"] * 6)
+
+
+logging.getLogger("uvicorn.access").addFilter(AccessLogPrivacyFilter())
 
 settings = get_settings()
+
 
 async def _startup() -> None:
     ensure_data_dirs(settings)
@@ -233,7 +266,9 @@ async def serve_spa(full_path: str):
                 "",
             )
         )
-        return RedirectResponse(url=redirect_target, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+        return RedirectResponse(
+            url=redirect_target, status_code=status.HTTP_307_TEMPORARY_REDIRECT
+        )
 
     return Response(content="Not Found", status_code=status.HTTP_404_NOT_FOUND)
 
@@ -254,6 +289,7 @@ def _pre_export_session_strings() -> None:
         wildcard_dir = signs_dir / "*"
         if wildcard_dir.exists() and wildcard_dir.is_dir():
             import shutil
+
             shutil.rmtree(wildcard_dir)
             logger.info("Cleaned up stray '*' task directory")
     except Exception as exc:
@@ -273,5 +309,6 @@ def _pre_export_session_strings() -> None:
             exported += 1
 
     if exported:
-        logger.info(f"Pre-exported {exported} session strings for in-memory task execution")
-
+        logger.info(
+            f"Pre-exported {exported} session strings for in-memory task execution"
+        )

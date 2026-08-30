@@ -169,6 +169,13 @@
 - 新增普通 API 与 DB task 两种账号检查锁边界回归测试；
 - 上游 0.9/Kurigram 升级可能让该旧锁边界问题更容易显现，但直接根因已在本项目修复。
 
+## 容器访问日志隐私处理
+
+- Uvicorn access log 仅脱敏展示客户端 IP：IPv4 保留前两段，IPv6 保留前两组；端口保留以支持连接问题排查；
+- `/health`、`/healthz`、`/readyz` 探针请求继续不写入 access log；
+- 不改变认证、限流或业务层对真实客户端地址的使用；
+- 新增 IPv4、IPv6、Uvicorn 参数日志和健康检查过滤的回归测试。
+
 ## 风险与暂不纳入本轮
 
 - 真实 Telegram 网络、账号 session、OpenAI 调用不在本地回归范围内。
