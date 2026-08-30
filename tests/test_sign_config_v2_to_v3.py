@@ -174,3 +174,83 @@ class TestSignConfigV2ToCurrent:
                 chat_id="neo",
                 actions=[SendTextAction(text="checkin")],
             )
+
+
+class TestSignConfigV3LoadRecursiveChain:
+    """回归：BaseJSONConfig.load 递归遍历完整版本链（V3->V2->V1）"""
+
+    def test_v3_load_accepts_v1_dict_directly(self):
+        v1_dict = {
+            "chat_id": 123,
+            "sign_text": "签到",
+            "sign_at": "08:00",
+            "random_seconds": 0,
+        }
+        result = SignConfigV3.load(v1_dict)
+        assert result is not None
+        config, from_old = result
+        assert from_old is True
+        assert isinstance(config, SignConfigV3)
+        assert len(config.chats) == 1
+        assert config.chats[0].chat_id == 123
+        assert config.chats[0].actions == [SendTextAction(text="签到")]
+
+    def test_v3_load_accepts_v2_dict_directly(self):
+        v2_dict = {
+            "chats": [{"chat_id": 456, "sign_text": "hello", "delete_after": 5}],
+            "sign_at": "09:00",
+            "random_seconds": 60,
+            "sign_interval": 1,
+        }
+        result = SignConfigV3.load(v2_dict)
+        assert result is not None
+        config, from_old = result
+        assert from_old is True
+        assert isinstance(config, SignConfigV3)
+        assert config.chats[0].chat_id == 456
+        assert config.chats[0].actions == [SendTextAction(text="hello")]
+
+    def test_v3_load_accepts_v3_dict_unmodified(self):
+        v3_dict = {
+            "chats": [
+                {"chat_id": 789, "actions": [{"action": 1, "text": "hi"}]}
+            ],
+            "sign_at": "0 0 * * *",
+            "sign_interval": 1,
+        }
+        result = SignConfigV3.load(v3_dict)
+        assert result is not None
+        config, from_old = result
+        assert from_old is False
+        assert config.chats[0].chat_id == 789
+
+    def test_v3_load_returns_none_for_unknown_dict(self):
+        assert SignConfigV3.load({"foo": "bar"}) is None
+
+    def test_v2_load_accepts_v1_dict(self):
+        v1_dict = {
+            "chat_id": 12,
+            "sign_text": "old",
+            "sign_at": "10:00",
+            "random_seconds": 0,
+        }
+        result = SignConfigV2.load(v1_dict)
+        assert result is not None
+        config, from_old = result
+        assert from_old is True
+        assert isinstance(config, SignConfigV2)
+        assert config.chats[0].sign_text == "old"
+
+    def test_v1_load_accepts_v1_dict(self):
+        v1_dict = {
+            "chat_id": 12,
+            "sign_text": "old",
+            "sign_at": "10:00",
+            "random_seconds": 0,
+        }
+        result = SignConfigV1.load(v1_dict)
+        assert result is not None
+        config, from_old = result
+        assert from_old is False
+        assert isinstance(config, SignConfigV1)
+        assert config.chat_id == 12

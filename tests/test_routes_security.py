@@ -163,3 +163,62 @@ def test_fastapi_docs_endpoints_disabled(client_with_user):
         assert "application/json" not in res_openapi.headers.get("content-type", "")
     else:
         assert res_openapi.status_code in (404, 405)
+
+
+def test_cleanup_old_logs_rejects_outside_logs_dir(client_with_user, monkeypatch, tmp_path):
+    """回归：cleanup_old_logs 删除前必须校验路径位于日志目录内（GPT 3.5）。"""
+    from datetime import timedelta
+
+    from backend.core.config import Settings
+    from backend.services.tasks import cleanup_old_logs
+    from backend.utils.time import utc_now_naive
+
+    client, headers, user, db = client_with_user
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Settings, "resolve_logs_dir", lambda self: logs_dir)
+
+    outside_file = tmp_path / "secret.env"
+    outside_file.write_text("SECRET_KEY=leaked", encoding="utf-8")
+    inside_file = logs_dir / "old_task.log"
+    inside_file.write_text("old", encoding="utf-8")
+
+    cutoff_date = utc_now_naive() - timedelta(days=10)
+
+    db.add(TaskLog(task_id=1, status="success", log_path=str(outside_file), started_at=cutoff_date))
+    db.add(TaskLog(task_id=1, status="success", log_path=str(inside_file), started_at=cutoff_date))
+    db.commit()
+
+    cleanup_old_logs(db, days=3)
+
+    # 目录外文件必须保留，目录内文件被清理
+    assert outside_file.exists()
+    assert not inside_file.exists()
+
+
+def test_get_log_output_truncates_large_file(client_with_user, monkeypatch, tmp_path):
+    """回归：完整日志读取限制大小并返回 truncated 标记（GPT 3.3）。"""
+    from backend.core.config import Settings
+
+    client, headers, user, db = client_with_user
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Settings, "resolve_logs_dir", lambda self: logs_dir)
+
+    big_file = logs_dir / "big.log"
+    big_file.write_text("x" * 5000, encoding="utf-8")
+
+    log = TaskLog(task_id=1, status="success", log_path=str(big_file))
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+
+    monkeypatch.setenv("TASK_LOG_READ_MAX_BYTES", "1024")
+
+    res = client.get(f"/api/tasks/logs/{log.id}/output", headers=headers)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["truncated"] is True
+    assert len(body["output"]) <= 1024 + 2  # 允许丢弃半行后的轻微余量

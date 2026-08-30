@@ -1480,3 +1480,123 @@ def test_normal_run_skips_username_resolution_errors_per_chat(signer_factory):
     asyncio.run(signer.normal_run(only_once=True))
 
     assert signed_chats == [123456]
+
+
+def test_normal_run_clears_only_current_chat_route_key(signer_factory):
+    """回归：A chat 完成只清 A 自己的 route_key，不清 B chat 的消息缓存。
+    合并时残留的全量清理会误清其他 chat 的目标消息（review 2.2）。"""
+    import tg_signer.core as core
+
+    signer = signer_factory()
+    signer.user = SimpleNamespace(id=1)
+    signer.context = signer.ensure_ctx()
+    signer._validate_sign_at = lambda *_: "0 0 * * *"
+    signer.load_sign_record = lambda: {}
+    signer.persist_sign_record = lambda *_args, **_kwargs: None
+
+    config = SignConfigV3(
+        chats=[
+            SignChatV3(chat_id=123456, actions=[SendTextAction(text="good")]),
+            SignChatV3(chat_id=234567, actions=[SendTextAction(text="good2")]),
+        ],
+        sign_at="0 0 * * *",
+        sign_interval=0,
+    )
+    signer.load_config = lambda _cls: config
+
+    captured = {}
+
+    async def fake_sign_a_chat(chat):
+        if chat.chat_id == 123456:
+            # A 处理期间，B 的目标消息已进入缓存
+            signer.context.chat_messages[(234567, None)][1001] = "b-target"
+            signer.context.chat_messages[(123456, None)][1000] = "a-target"
+        elif chat.chat_id == 234567:
+            # B 处理时，其缓存消息必须仍存在（A 完成时不得被全量清理）
+            captured["b_survived"] = (
+                signer.context.chat_messages.get((234567, None), {}).get(1001)
+                == "b-target"
+            )
+
+    signer.sign_a_chat = fake_sign_a_chat
+
+    class DummyApp:
+        key = "dummy-app"
+
+        def add_handler(self, *_args, **_kwargs):
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get_chat(self, chat_id):
+            raise core.errors.UsernameNotOccupied(chat_id)
+
+    signer.app = DummyApp()
+
+    asyncio.run(signer.normal_run(only_once=True))
+
+    assert captured.get("b_survived") is True
+
+
+@pytest.mark.asyncio
+async def test_close_client_by_name_cleans_both_keys_even_when_base_in_use(
+    monkeypatch, tmp_path
+):
+    """回归：close_client_by_name 必须同时评估基础 key 与 ::memory key。
+    旧实现在基础 key 有引用时提前 return，导致内存客户端残留（review 3.2）。"""
+    import tg_signer.core as core
+
+    async def fake_connect(self):
+        await asyncio.sleep(0)
+        self.is_connected = True
+        return True
+
+    async def fake_stop(self):
+        self.is_connected = False
+
+    async def fake_get_me(self):
+        return SimpleNamespace(id=1)
+
+    async def fake_invoke(self, *_a, **_k):
+        return None
+
+    async def fake_initialize(self):
+        pass
+
+    monkeypatch.setattr(core.Client, "connect", fake_connect)
+    monkeypatch.setattr(core.Client, "get_me", fake_get_me)
+    monkeypatch.setattr(core.Client, "invoke", fake_invoke)
+    monkeypatch.setattr(core.Client, "initialize", fake_initialize)
+    monkeypatch.setattr(core.Client, "stop", fake_stop)
+
+    base = get_client(name="acct", workdir=tmp_path)
+    base_key = base.key
+    mem = get_client(
+        name="acct", workdir=tmp_path, in_memory=True, session_string="1:abc"
+    )
+    mem_key = mem.key
+    assert base_key != mem_key
+    assert base_key in core._CLIENT_INSTANCES
+    assert mem_key in core._CLIENT_INSTANCES
+
+    # 模拟基础 key 仍被使用（refs>0），且存在锁（触发 refs 分支）
+    core._CLIENT_REFS[base_key] = 1
+    core._CLIENT_ASYNC_LOCKS[base_key] = asyncio.Lock()
+
+    await core.close_client_by_name("acct", workdir=tmp_path)
+
+    assert base_key not in core._CLIENT_INSTANCES
+    assert mem_key not in core._CLIENT_INSTANCES
+
+
+def test_load_config_raises_readable_error_on_unknown_config(signer_factory):
+    """回归：无法识别的配置文件应给出可读 ValueError，而不是裸 TypeError（review 2.3）。"""
+    signer = signer_factory()
+    signer.config_file.parent.mkdir(parents=True, exist_ok=True)
+    signer.config_file.write_text(json.dumps({"foo": "bar"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="无法识别"):
+        signer.load_config()

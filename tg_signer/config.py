@@ -103,8 +103,12 @@ class BaseJSONConfig(BaseModel):
     def load(cls, d: dict) -> Optional[Tuple[Self, bool]]:
         if instance := cls.valid(d):
             return instance, False
+        # 递归遍历完整版本链（如 V3 -> V2 -> V1）：
+        # 老版本自身的 load() 会继续向更老版本迁移，
+        # 因此 V3.load(V1_dict) 也能正确迁移，而不是返回 None。
         for old in cls.olds or []:
-            if old_inst := old.valid(d):
+            if old_result := old.load(d):
+                old_inst, _ = old_result
                 return old.to_current(old_inst), True
         return None
 

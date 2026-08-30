@@ -806,7 +806,8 @@ async def close_client_by_name(name: str, workdir: Union[str, pathlib.Path] = ".
                         # "Client has not been started yet"。仅从缓存摘除，让新请求
                         # 创建新实例，由最后一个持有者（__aexit__）负责真正 stop。
                         _CLIENT_INSTANCES.pop(key, None)
-                        return
+                        # 继续处理下一个 key（如 ::memory），避免早退漏清理
+                        continue
                     # Reset references to 0 to ensure proper cleanup
                     _CLIENT_REFS[key] = 0
                 finally:
@@ -819,7 +820,8 @@ async def close_client_by_name(name: str, workdir: Union[str, pathlib.Path] = ".
                 refs = _CLIENT_REFS.get(key, 0)
                 if refs > 0:
                     _CLIENT_INSTANCES.pop(key, None)
-                    return
+                    # 继续处理下一个 key（如 ::memory），避免早退漏清理
+                    continue
                 _CLIENT_REFS[key] = 0
             except Exception:
                 _CLIENT_REFS[key] = 0
@@ -1125,9 +1127,16 @@ class BaseUserWorker(Generic[ConfigT]):
             config = self.reconfig()
         else:
             with open(self.config_file, "r", encoding="utf-8") as fp:
-                config, from_old = cfg_cls.load(json.load(fp))
-                if from_old:
-                    self.write_config(config)
+                raw = json.load(fp)
+            loaded = cfg_cls.load(raw)
+            if loaded is None:
+                raise ValueError(
+                    f"无法识别的任务配置文件: {self.config_file}。"
+                    "支持 V1/V2/V3 版本，迁移链无法匹配当前配置内容。"
+                )
+            config, from_old = loaded
+            if from_old:
+                self.write_config(config)
         self.config = config
         return config
 
@@ -2182,8 +2191,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     logger.warning(_e, exc_info=True)
                     continue
 
-                for _route_key in list(self.context.chat_messages.keys()):
-                    self.context.chat_messages[_route_key].clear()
+                # 只清理当前路由的消息缓存，避免误清其他 chat 的目标消息
+                # （0.9 语义：chat_messages[route_key].clear()）
+                self.context.chat_messages[route_key].clear()
                 await asyncio.sleep(config.sign_interval)
 
             if success_count == 0 and len(config.chats) > 0:

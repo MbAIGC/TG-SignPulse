@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import timedelta
 from pathlib import Path
 from typing import List, Optional
@@ -16,6 +17,8 @@ from backend.utils.time import utc_now_naive
 from tg_signer.async_utils import create_logged_task
 
 settings = get_settings()
+
+logger = logging.getLogger(__name__)
 
 # 用于实时日志推送的状态跟踪
 _active_tasks: dict[int, bool] = {}
@@ -45,12 +48,19 @@ def cleanup_old_logs(db: Session, days: int = 3) -> int:
         .all()
     )
 
+    logs_dir = settings.resolve_logs_dir().resolve()
     for (log_path,) in old_log_paths:
         if log_path:
             try:
-                p = Path(log_path)
-                if p.exists():
-                    p.unlink()
+                p = Path(log_path).resolve()
+                # 只允许删除日志目录内的普通文件，拒绝符号链接/目录/越界路径
+                if not p.is_relative_to(logs_dir):
+                    logger.warning("拒绝删除日志目录外的文件: %s", log_path)
+                    continue
+                if p.is_symlink() or not p.is_file():
+                    logger.warning("拒绝删除符号链接/非普通文件: %s", log_path)
+                    continue
+                p.unlink()
             except Exception:
                 pass
 

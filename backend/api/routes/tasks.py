@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 from fastapi import (
@@ -216,13 +217,26 @@ def get_log_output(
             detail="Access to log file outside logs directory is forbidden",
         )
 
-    if not target_path.exists() or not target_path.is_file():
+    # 拒绝符号链接与非普通文件，防止日志读取越界
+    if target_path.is_symlink() or not target_path.is_file():
         return {"output": log.output or "No detailed log file available."}
 
     try:
+        # 限制完整日志读取大小（默认读取末尾 MAX_LOG_READ_BYTES 字节，
+        # 避免大日志一次性读入内存造成 OOM）
+        max_bytes = int(os.environ.get("TASK_LOG_READ_MAX_BYTES", str(2 * 1024 * 1024)))
         with open(target_path, "r", encoding="utf-8") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            truncated = size > max_bytes
+            if truncated:
+                f.seek(size - max_bytes)
+                # 丢弃第一行可能被截断的半行
+                f.readline()
+            else:
+                f.seek(0)
             content = f.read()
-        return {"output": content}
+        return {"output": content, "truncated": truncated}
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to read log file: {str(e)}"
