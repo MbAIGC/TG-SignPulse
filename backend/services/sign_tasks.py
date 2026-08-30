@@ -418,19 +418,25 @@ class SignTaskService:
         return best_text or fallback_text
 
     def _cleanup_old_logs(self):
-        """清理超过 3 天的日志"""
+        """清理超过 3 天的日志（JSON 兼容文件 + SQLite 主存储）"""
         from datetime import datetime, timedelta
 
-        if not self.run_history_dir.exists():
-            return
-
         limit = datetime.now() - timedelta(days=3)
-        for log_file in self.run_history_dir.glob("*.json"):
-            if log_file.stat().st_mtime < limit.timestamp():
-                try:
-                    log_file.unlink()
-                except Exception:
-                    continue
+
+        # JSON 兼容文件（按文件 mtime）
+        if self.run_history_dir.exists():
+            for log_file in self.run_history_dir.glob("*.json"):
+                if log_file.stat().st_mtime < limit.timestamp():
+                    try:
+                        log_file.unlink()
+                    except Exception:
+                        continue
+
+        # SQLite 主存储（按 time 字段，ISO 字符串字典序比较）
+        try:
+            self._run_history_store.delete_older_than(before_iso=limit.isoformat())
+        except Exception:
+            pass
 
     def _safe_history_key(self, name: str) -> str:
         return name.replace("/", "_").replace("\\", "_")

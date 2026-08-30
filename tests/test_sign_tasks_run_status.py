@@ -135,3 +135,119 @@ def test_get_run_status_idle_when_no_record(sign_task_service):
     status = svc.get_task_run_status("acct_none", "task_none")
     assert status["state"] == "idle"
     assert status["run_id"] == ""
+
+
+def test_cleanup_old_logs_removes_stale_sqlite_entries(sign_task_service, tmp_path):
+    """_cleanup_old_logs 应同时清理 SQLite 主存储中超过 3 天的条目。"""
+    svc = sign_task_service
+    store = svc._run_history_store
+
+    # 直接写入 SQLite：一条旧、一条新（跳过 _save_run_info 的时间生成）
+    store.save_entry(
+        task_name="task_clean",
+        account_name="acct_clean",
+        entry={
+            "time": "2020-01-01T00:00:00",
+            "success": True,
+            "message": "old",
+            "account_name": "acct_clean",
+            "run_id": "o" * 32,
+        },
+        max_entries=100,
+    )
+    store.save_entry(
+        task_name="task_clean",
+        account_name="acct_clean",
+        entry={
+            "time": "2999-01-01T00:00:00",
+            "success": True,
+            "message": "new",
+            "account_name": "acct_clean",
+            "run_id": "n" * 32,
+        },
+        max_entries=100,
+    )
+
+    svc._cleanup_old_logs()
+
+    remaining = store.load_entries(task_name="task_clean", account_name="acct_clean")
+    assert [e["run_id"] for e in remaining] == ["n" * 32]
+
+
+# 子进程脚本：在指定 workdir 写入 running 状态后直接退出（模拟运行中被中断）。
+_WORKER_WRITE_RUNNING = r"""
+import os, sys
+from pathlib import Path
+
+workdir, account, task, run_id = sys.argv[1:5]
+sys.path.insert(0, os.path.abspath("."))
+
+from backend.core.config import Settings
+Settings.resolve_workdir = lambda self: Path(workdir)
+
+from backend.services.sign_tasks import SignTaskService
+svc = SignTaskService()
+svc._set_run_status(
+    account, task,
+    run_id=run_id,
+    state="running",
+    success=None,
+    error="",
+    output="",
+)
+# 不写终态，直接退出（进程中断）
+"""
+
+
+def test_cross_process_interrupted_running_marked_cancelled_after_restart(
+    tmp_path, monkeypatch
+):
+    """真跨进程：子进程写 running 后中断，父进程重启实例应恢复为 cancelled。"""
+    import subprocess
+    import sys as _sys
+
+    from backend.core.config import Settings
+
+    workdir = tmp_path / "workdir"
+    account = "acct_crossproc"
+    task = "task_crossproc"
+    run_id = "c" * 32
+
+    # 子进程写入 running 状态
+    result = subprocess.run(
+        [
+            _sys.executable,
+            "-c",
+            _WORKER_WRITE_RUNNING,
+            str(workdir),
+            account,
+            task,
+            run_id,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, f"子进程失败: {result.stderr}"
+
+    # 状态文件已由子进程落盘
+    status_file = workdir / "history" / "_run_status" / f"{account}__{task}.json"
+    assert status_file.exists(), "子进程应已写盘 running 状态"
+
+    # 父进程模拟重启：同一 workdir 新建实例，从磁盘恢复
+    monkeypatch.setattr(
+        Settings,
+        "resolve_workdir",
+        lambda self: workdir,
+        raising=False,
+    )
+    import backend.services.sign_tasks as st
+
+    st._sign_task_service = None
+    svc = SignTaskService()
+    restored = svc.get_task_run_status(account, task, run_id=run_id)
+    assert restored["state"] == "cancelled"
+    assert restored["success"] is False
+    assert "重启" in restored["error"] or "中断" in restored["error"]
+    # 说明：_load_persisted_run_statuses 将磁盘 running 解释为 cancelled 只改内存；
+    # 磁盘保留最近运行态（running），下次启动仍会被正确解释为中断。

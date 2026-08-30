@@ -84,6 +84,28 @@ def test_clear(store):
     assert store.total_entries() == 0
 
 
+def test_delete_older_than(store):
+    """按 time（ISO 字典序）删除早于阈值的条目。"""
+    store.save_entry(
+        task_name="task1", account_name="acct",
+        entry=_entry("2026-01-01T00:00:00", run_id="old"), max_entries=100,
+    )
+    store.save_entry(
+        task_name="task1", account_name="acct",
+        entry=_entry("2026-01-02T00:00:00", run_id="new"), max_entries=100,
+    )
+    removed = store.delete_older_than(before_iso="2026-01-01T12:00:00")
+    assert removed == 1
+    remaining = store.load_entries(task_name="task1", account_name="acct")
+    assert [e["run_id"] for e in remaining] == ["new"]
+
+
+def test_delete_older_than_noop_when_none(store):
+    store.save_entry(task_name="task1", account_name="acct", entry=_entry("t1"), max_entries=100)
+    assert store.delete_older_than(before_iso="0001-01-01T00:00:00") == 0
+    assert store.total_entries() == 1
+
+
 def test_store_shared_by_workdir(tmp_path):
     """同一 workdir 复用同一 store（单例），避免多连接锁竞争。"""
     s1 = get_run_history_store(tmp_path / "workdir")

@@ -48,6 +48,14 @@
 | 重启恢复 | `docker restart` | ✅ 重启后 `/healthz` 200，容器状态 `healthy` |
 | 自动密钥 0600 | 不设 `APP_SECRET_KEY` 再启动 | ✅ `.app_secret_key` 权限 `600` |
 | 认证保护 | 未带 token 请求 `/api/accounts`、`/api/tasks` | ✅ 401 |
+| Compose 拓扑校验 | `docker compose config` | ✅ 配置合法 |
+| Compose 启动冒烟 | 本地构建同名镜像 + `docker compose up -d` | ✅ 容器 `Up (health: starting)→healthy`；`/healthz` 200；`<data>/` 落盘（`db.sqlite`/WAL/密钥 0600）；未带 token 请求 `/api/tasks` 401 |
+| Compose 清理 | `docker compose down -v` + 删本地同名镜像 | ✅ 无残留 |
+
+> 沙箱备注：Docker CLI 配置目录 `/root/.docker` 只读，需
+> `DOCKER_CONFIG=<workspace 可写目录>` 执行；compose 引用 `ghcr.io/mbaigc/tg-signpulse:latest`
+> 在沙箱内无法拉取 GHCR，故以本地构建的同名镜像覆盖验证同一 compose 拓扑；
+> 多 worker 同挂载 `/data`、真实 Telegram、反向代理 WebSocket 仍以目标环境为准。
 
 > 沙箱备注：Docker CLI 配置目录 `/root/.docker` 只读，需
 > `DOCKER_CONFIG=<workspace 可写目录>` 执行；构建与冒烟已在本环境完成，

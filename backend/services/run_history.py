@@ -185,6 +185,15 @@ class RunHistoryStore:
         conn.commit()
         return cur.rowcount
 
+    def delete_older_than(self, *, before_iso: str) -> int:
+        """删除 time < before_iso 的历史条目（ISO 字符串字典序比较）。"""
+        conn = self._conn()
+        cur = conn.execute(
+            "DELETE FROM run_history WHERE time < ?", (before_iso,)
+        )
+        conn.commit()
+        return cur.rowcount
+
     def total_entries(self) -> int:
         conn = self._conn()
         return conn.execute("SELECT COUNT(*) FROM run_history").fetchone()[0]
