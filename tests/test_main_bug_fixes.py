@@ -103,3 +103,27 @@ def test_concurrent_start_returns_same_run(monkeypatch, tmp_path):
     statuses = asyncio.run(scenario())
     assert statuses[0]["run_id"] == statuses[1]["run_id"]
     assert len(calls) == 1
+
+
+def test_background_start_executes_reserved_run(monkeypatch, tmp_path):
+    from backend.core.config import Settings
+
+    monkeypatch.setattr(Settings, "resolve_workdir", lambda self: tmp_path / "workdir")
+    service = SignTaskService()
+    monkeypatch.setattr(service, "get_task", lambda *args, **kwargs: {"name": "task"})
+
+    async def successful_run(*args, **kwargs):
+        assert kwargs["allow_active_task"] is True
+        return {"success": True, "output": "completed", "error": ""}
+
+    monkeypatch.setattr(service, "run_task_with_logs", successful_run)
+
+    async def scenario():
+        started = await service.start_task_run("acct", "task")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return service.get_task_run_status("acct", "task", started["run_id"])
+
+    result = asyncio.run(scenario())
+    assert result["state"] == "finished"
+    assert result["success"] is True

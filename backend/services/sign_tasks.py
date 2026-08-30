@@ -3509,6 +3509,7 @@ class SignTaskService:
                     task_name,
                     run_id=context.run_id,
                     source=context.source,
+                    allow_active_task=True,
                 )
             except asyncio.CancelledError:
                 state = "cancelled"
@@ -3671,6 +3672,7 @@ class SignTaskService:
         lock_already_held: bool = False,
         run_id: Optional[str] = None,
         source: RunSource = "manual",
+        allow_active_task: bool = False,
     ) -> Dict[str, Any]:
         """运行任务并实时捕获日志 (In-Process)。
 
@@ -3687,7 +3689,7 @@ class SignTaskService:
         # the window where two direct calls both pass the running check.
         start_lock = self._run_start_locks.setdefault(task_key, asyncio.Lock())
         async with start_lock:
-            if self._active_tasks.get(task_key):
+            if self._active_tasks.get(task_key) and not allow_active_task:
                 return {"success": False, "error": "任务已经在运行中", "output": ""}
             self._active_tasks[task_key] = True
             self._active_logs[task_key] = []

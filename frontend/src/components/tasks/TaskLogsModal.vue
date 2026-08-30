@@ -11,6 +11,7 @@ const props = defineProps<{
   isOpen: boolean
   task: any | null
   runAccount?: string  // Account selected for running (overrides task default)
+  runId?: string
 }>()
 
 const emit = defineEmits<{
@@ -141,7 +142,9 @@ const startPolling = () => {
         }
       }
       // Check if task is still running
-      const statusRes = await fetch(`/api/sign-tasks/${encodeURIComponent(props.task.name)}/run/status?account_name=${encodeURIComponent(accountName)}`, {
+      const statusParams = new URLSearchParams({ account_name: accountName })
+      if (props.runId) statusParams.set('run_id', props.runId)
+      const statusRes = await fetch(`/api/sign-tasks/${encodeURIComponent(props.task.name)}/run/status?${statusParams.toString()}`, {
         headers: { Authorization: `Bearer ${token}` }
       })
       if (statusRes.ok) {
