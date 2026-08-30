@@ -37,12 +37,14 @@ class TaskHistoryLogItem(BaseModel):
     success: bool
     created_at: str
     flow_line_count: int = 0
+    run_id: Optional[str] = None
 
 
 class TaskHistoryLogDetailItem(TaskHistoryLogItem):
     flow_logs: list[str] = []
     flow_truncated: bool = False
     last_target_message: Optional[str] = None
+    run_id: Optional[str] = None
 
 
 class ClearLogsResponse(BaseModel):
@@ -115,7 +117,9 @@ def clear_login_logs(
 
     cleared = db.query(LoginLog).delete()
     db.commit()
-    return ClearLogsResponse(success=True, cleared=cleared, message="Login logs cleared")
+    return ClearLogsResponse(
+        success=True, cleared=cleared, message="Login logs cleared"
+    )
 
 
 @router.delete("/login/{log_id}", response_model=DeleteLogResponse)
@@ -128,7 +132,9 @@ def delete_login_log(
 
     row = db.query(LoginLog).filter(LoginLog.id == log_id).first()
     if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="LOGIN_LOG_NOT_FOUND")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="LOGIN_LOG_NOT_FOUND"
+        )
 
     db.delete(row)
     db.commit()
@@ -171,6 +177,7 @@ def get_task_logs(
             success=bool(item.get("success", False)),
             created_at=str(item.get("time") or ""),
             flow_line_count=int(item.get("flow_line_count") or 0),
+            run_id=str(item.get("run_id") or "") or None,
         )
         for index, item in enumerate(history)
     ]
@@ -180,7 +187,8 @@ def get_task_logs(
 def get_task_log_detail(
     account_name: str,
     task_name: str,
-    created_at: str,
+    created_at: str = "",
+    run_id: Optional[str] = None,
     current_user: User = Depends(get_current_user),
 ):
     del current_user
@@ -189,9 +197,12 @@ def get_task_log_detail(
         account_name=account_name,
         task_name=task_name,
         created_at=created_at,
+        run_id=run_id or "",
     )
     if detail is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="TASK_LOG_NOT_FOUND")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="TASK_LOG_NOT_FOUND"
+        )
 
     return TaskHistoryLogDetailItem(
         id=1,
@@ -209,7 +220,9 @@ def get_task_log_detail(
         flow_line_count=int(detail.get("flow_line_count") or 0),
         flow_logs=[str(line) for line in detail.get("flow_logs") or []],
         flow_truncated=bool(detail.get("flow_truncated", False)),
-        last_target_message=str(detail.get("last_target_message") or "").strip() or None,
+        last_target_message=str(detail.get("last_target_message") or "").strip()
+        or None,
+        run_id=str(detail.get("run_id") or "") or None,
     )
 
 
@@ -229,7 +242,8 @@ def clear_task_logs(current_user: User = Depends(get_current_user)):
 def delete_task_log(
     account_name: str,
     task_name: str,
-    created_at: str,
+    created_at: str = "",
+    run_id: Optional[str] = None,
     current_user: User = Depends(get_current_user),
 ):
     del current_user
@@ -238,8 +252,11 @@ def delete_task_log(
         account_name=account_name,
         task_name=task_name,
         created_at=created_at,
+        run_id=run_id or "",
     )
     if not deleted:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="TASK_LOG_NOT_FOUND")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="TASK_LOG_NOT_FOUND"
+        )
 
     return DeleteLogResponse(success=True, message="Task log deleted")

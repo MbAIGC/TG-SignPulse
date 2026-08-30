@@ -617,6 +617,7 @@ export interface TaskHistoryLog {
   success: boolean;
   created_at: string;
   flow_line_count: number;
+  run_id?: string | null;
 }
 
 export interface TaskHistoryLogDetail extends TaskHistoryLog {
@@ -674,13 +675,15 @@ export const getTaskHistoryLogDetail = (
   options: {
     account_name: string;
     task_name: string;
-    created_at: string;
+    created_at?: string;
+    run_id?: string;
   }
 ) => {
   const params = new URLSearchParams();
   params.append("account_name", options.account_name);
   params.append("task_name", options.task_name);
-  params.append("created_at", options.created_at);
+  if (options.run_id) params.append("run_id", options.run_id);
+  if (options.created_at) params.append("created_at", options.created_at);
   return request<TaskHistoryLogDetail>(`/logs/tasks/item?${params.toString()}`, {}, token);
 };
 
@@ -696,13 +699,15 @@ export const deleteTaskHistoryLog = (
   options: {
     account_name: string;
     task_name: string;
-    created_at: string;
+    created_at?: string;
+    run_id?: string;
   }
 ) => {
   const params = new URLSearchParams();
   params.append("account_name", options.account_name);
   params.append("task_name", options.task_name);
-  params.append("created_at", options.created_at);
+  if (options.run_id) params.append("run_id", options.run_id);
+  if (options.created_at) params.append("created_at", options.created_at);
   return request<{ success: boolean; message: string }>(
     `/logs/tasks/item?${params.toString()}`,
     { method: "DELETE" },
@@ -826,7 +831,9 @@ export const runSignTask = (token: string, name: string, accountName: string) =>
 
 export interface SignTaskRunStatus {
   run_id: string;
-  state: "idle" | "stale" | "running" | "finished" | string;
+  state: "idle" | "stale" | "running" | "finished" | "cancelled";
+  source?: "api" | "scheduler" | "db_task" | "manual";
+  worker_id?: string | null;
   success?: boolean | null;
   error?: string;
   output?: string;
@@ -838,6 +845,18 @@ export const startSignTaskRun = (token: string, name: string, accountName: strin
   request<SignTaskRunStatus>(`/sign-tasks/${encodeURIComponent(name)}/run/start?account_name=${encodeURIComponent(accountName)}`, {
     method: "POST",
   }, token);
+
+export const cancelSignTaskRun = (
+  token: string,
+  name: string,
+  accountName: string,
+  runId: string,
+) =>
+  request<SignTaskRunStatus>(
+    `/sign-tasks/${encodeURIComponent(name)}/run/cancel?account_name=${encodeURIComponent(accountName)}&run_id=${encodeURIComponent(runId)}`,
+    { method: "POST" },
+    token,
+  );
 
 export const getSignTaskRunStatus = (
   token: string,

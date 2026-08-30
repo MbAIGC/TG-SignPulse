@@ -33,6 +33,50 @@ def sign_task_service(tmp_path, monkeypatch):
     st._sign_task_service = None
 
 
+@pytest.mark.asyncio
+async def test_run_status_init_failure_releases_active_state(
+    sign_task_service, monkeypatch
+):
+    svc = sign_task_service
+
+    def fail_status(*args, **kwargs):
+        raise OSError("status storage unavailable")
+
+    monkeypatch.setattr(svc, "_set_run_status", fail_status)
+
+    with pytest.raises(OSError, match="status storage unavailable"):
+        await svc.run_task_with_logs("acct_init", "task_init")
+
+    assert svc.is_task_running("task_init", account_name="acct_init") is False
+    assert ("acct_init", "task_init") not in svc._active_logs
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_run_persists_cancelled_status(
+    sign_task_service, monkeypatch
+):
+    svc = sign_task_service
+    monkeypatch.setattr(svc, "get_task", lambda *args, **kwargs: {"name": "task"})
+
+    async def wait_for_cancel(*args, **kwargs):
+        import asyncio
+
+        await asyncio.sleep(60)
+        return {"success": True, "error": "", "output": ""}
+
+    monkeypatch.setattr(svc, "run_task_with_logs", wait_for_cancel)
+    started = await svc.start_task_run("acct_cancel", "task")
+    cancelled = await svc.cancel_task_run(
+        "acct_cancel", "task", run_id=started["run_id"]
+    )
+
+    assert cancelled["state"] == "cancelled"
+    assert cancelled["success"] is False
+    persisted = svc._run_state_store.get(started["run_id"])
+    assert persisted is not None
+    assert persisted["state"] == "cancelled"
+
+
 def test_run_id_unique_and_persisted_in_history(sign_task_service):
     """每次运行生成唯一 run_id，并写入 history 条目。"""
     svc = sign_task_service

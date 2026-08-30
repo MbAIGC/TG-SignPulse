@@ -186,6 +186,8 @@ class RunTaskStartResult(BaseModel):
     output: str = ""
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    source: Optional[str] = None
+    worker_id: Optional[str] = None
 
 
 class RunTaskStatusResult(BaseModel):
@@ -196,6 +198,12 @@ class RunTaskStatusResult(BaseModel):
     output: str = ""
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    source: Optional[str] = None
+    worker_id: Optional[str] = None
+
+
+class CancelRunResult(RunTaskStatusResult):
+    pass
 
 
 class TaskHistoryItem(BaseModel):
@@ -410,7 +418,7 @@ async def run_sign_task(
             if not task:
                 raise HTTPException(status_code=404, detail=f"任务 {task_name} 不存在")
         return await get_sign_task_service().run_task_with_logs(
-            resolved_account, task_name
+            resolved_account, task_name, source="api"
         )
     except HTTPException:
         raise
@@ -457,6 +465,21 @@ async def start_sign_task_run(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(e),
         ) from e
+
+
+@router.post("/{task_name}/run/cancel", response_model=CancelRunResult)
+async def cancel_sign_task_run(
+    task_name: str,
+    account_name: str,
+    run_id: str,
+    current_user=Depends(get_current_user),
+):
+    try:
+        return await get_sign_task_service().cancel_task_run(
+            account_name, task_name, run_id=run_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.get("/{task_name}/run/status", response_model=RunTaskStatusResult)

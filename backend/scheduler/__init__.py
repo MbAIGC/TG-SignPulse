@@ -47,7 +47,7 @@ def create_cron_trigger(cron_str: str) -> CronTrigger:
             hour=parts[2],
             day=parts[3],
             month=parts[4],
-            day_of_week=parts[5]
+            day_of_week=parts[5],
         )
     return CronTrigger.from_crontab(cron_str)
 
@@ -96,8 +96,10 @@ async def _job_run_sign_task(
     import asyncio
     import logging
     import random
-    from datetime import datetime, timedelta
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
 
+    from backend.core.config import get_settings
     from backend.services.sign_tasks import get_sign_task_service
 
     logger = logging.getLogger("backend.scheduler")
@@ -118,7 +120,7 @@ async def _job_run_sign_task(
                     end_time = _parse_clock_time(range_end_str)
 
                     # 转换为当前日期的 datetime
-                    now = datetime.now()
+                    now = datetime.now(ZoneInfo(get_settings().timezone))
                     start_dt = now.replace(
                         hour=start_time.hour,
                         minute=start_time.minute,
@@ -161,7 +163,9 @@ async def _job_run_sign_task(
 
         # run_task_with_logs 是 async 的，我们使用它
         sign_task_service = get_sign_task_service()
-        result = await sign_task_service.run_task_with_logs(account_name, task_name)
+        result = await sign_task_service.run_task_with_logs(
+            account_name, task_name, source="scheduler"
+        )
         if result.get("success"):
             logger.info(f"Scheduler: 任务 {task_name} 执行成功")
         else:
@@ -243,13 +247,14 @@ async def sync_jobs() -> None:
             account_name = str(st.get("account_name") or "").strip()
             task_name = str(st.get("name") or "").strip()
             if not account_name or not task_name:
-                logger.warning("Skip scheduling sign task with missing account/name: %s", st)
+                logger.warning(
+                    "Skip scheduling sign task with missing account/name: %s", st
+                )
                 continue
 
             daily_times = _normalize_daily_times(st.get("daily_times"))
             job_ids = [
-                f"sign-{account_name}-{task_name}#{i}"
-                for i in range(daily_times)
+                f"sign-{account_name}-{task_name}#{i}" for i in range(daily_times)
             ]
 
             # SignTask 目前默认都是启用的，或者根据 st['enabled']

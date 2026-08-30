@@ -86,6 +86,7 @@ const loadTaskLogs = async () => {
       id: l.id,
       time: formatTime(l.created_at),
       created_at: l.created_at,
+      run_id: l.run_id,
       account: l.account_name,
       task: l.task_name,
       status: l.success ? 'success' : 'error',
@@ -140,14 +141,15 @@ const openLogDetail = async (log: any) => {
 
   // Fetch full detail with flow_logs
   const token = localStorage.getItem('tg-signer-token') || ''
-  if (!token || !log.account || !log.task || !log.created_at) return
+  if (!token || !log.account || !log.task || (!log.created_at && !log.run_id)) return
 
   detailLoading.value = true
   try {
     const detail = await getTaskHistoryLogDetail(token, {
       account_name: log.account,
       task_name: log.task,
-      created_at: log.created_at
+      created_at: log.created_at,
+      run_id: log.run_id
     })
     logDetail.value = detail
   } catch (e) {

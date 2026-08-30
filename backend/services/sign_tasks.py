@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from backend.core.config import get_settings
+from backend.services.run_context import RunContext, RunSource
+from backend.services.run_coordinator import RunCoordinator
 from backend.utils.account_locks import get_account_lock
 from backend.utils.memory import trim_memory
 from backend.utils.names import validate_storage_name
@@ -111,7 +113,9 @@ class SignTaskService:
         re.compile(r"(签到|任务|执行|操作|请求|发送|点击)\s*(失败|异常|超时)"),
         re.compile(r"(未找到|找不到).*(按钮|消息|会话|聊天|目标)"),
         re.compile(r"(账号|会话|session).*(失效|无效|invalid)"),
-        re.compile(r"\b(failed|failure|timed out|timeout|not found|invalid session|error)\b"),
+        re.compile(
+            r"\b(failed|failure|timed out|timeout|not found|invalid session|error)\b"
+        ),
     )
 
     @staticmethod
@@ -136,22 +140,32 @@ class SignTaskService:
         _service_logger.info(
             "SignTaskService initialized, signs_dir=%s", self.signs_dir
         )
-        self._active_logs: Dict[tuple[str, str], List[str]] = {}  # (account, task) -> logs
-        self._active_tasks: Dict[tuple[str, str], bool] = {}  # (account, task) -> running
+        self._active_logs: Dict[
+            tuple[str, str], List[str]
+        ] = {}  # (account, task) -> logs
+        self._active_tasks: Dict[
+            tuple[str, str], bool
+        ] = {}  # (account, task) -> running
         self._cleanup_tasks: Dict[tuple[str, str], asyncio.Task] = {}
         self._run_statuses: Dict[tuple[str, str], Dict[str, Any]] = {}
         self._run_status_cleanup_tasks: Dict[tuple[str, str], asyncio.Task] = {}
         self._background_run_tasks: Dict[tuple[str, str], asyncio.Task] = {}
+        # Protect the check/register interval in start_task_run.
+        self._run_start_locks: Dict[tuple[str, str], asyncio.Lock] = {}
+        self._run_coordinator = RunCoordinator()
         self._tasks_cache = None  # 内存缓存
         self._account_locks: Dict[str, asyncio.Lock] = {}  # 账号锁
         self._account_last_run_end: Dict[str, float] = {}  # 账号最后一次结束时间
         self._run_status_dir = self.run_history_dir / "_run_status"
         self._run_status_dir.mkdir(parents=True, exist_ok=True)
-        self._load_persisted_run_statuses()
-        # 5.4：历史统一 SQLite 主存储（JSON 兼容读取）
+        # SQLite is the durable source for run state; JSON remains a restart
+        # compatibility fallback for installations created before task_runs.
         from backend.services.run_history import get_run_history_store
+        from backend.services.run_state_store import RunStateStore
 
         self._run_history_store = get_run_history_store(self.workdir)
+        self._run_state_store = RunStateStore(self.workdir)
+        self._load_persisted_run_statuses()
         self._account_cooldown_seconds = int(
             os.getenv("SIGN_TASK_ACCOUNT_COOLDOWN", "5")
         )
@@ -176,7 +190,10 @@ class SignTaskService:
 
         # Prune _active_logs for tasks that are no longer running and have no cleanup pending
         for key in list(self._active_logs.keys()):
-            if not self._active_tasks.get(key, False) and key not in self._cleanup_tasks:
+            if (
+                not self._active_tasks.get(key, False)
+                and key not in self._cleanup_tasks
+            ):
                 self._active_logs.pop(key, None)
 
         # Prune completed background run tasks
@@ -189,7 +206,9 @@ class SignTaskService:
         for key in done_cleanup:
             self._cleanup_tasks.pop(key, None)
 
-        done_status_cleanup = [k for k, t in self._run_status_cleanup_tasks.items() if t.done()]
+        done_status_cleanup = [
+            k for k, t in self._run_status_cleanup_tasks.items() if t.done()
+        ]
         for key in done_status_cleanup:
             self._run_status_cleanup_tasks.pop(key, None)
 
@@ -271,7 +290,9 @@ class SignTaskService:
         if message is None:
             return ""
 
-        text = str(getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+        text = str(
+            getattr(message, "text", None) or getattr(message, "caption", None) or ""
+        ).strip()
         if text:
             return text
 
@@ -335,7 +356,9 @@ class SignTaskService:
         if any(marker in normalized for marker in success_markers):
             return False
 
-        return any(pattern.search(normalized) for pattern in cls._STRONG_FAILURE_PATTERNS)
+        return any(
+            pattern.search(normalized) for pattern in cls._STRONG_FAILURE_PATTERNS
+        )
 
     async def _fetch_last_target_message_from_chat_history(
         self,
@@ -365,7 +388,9 @@ class SignTaskService:
             if app is None:
                 return ""
             # Check if client is still usable (not terminated)
-            if not getattr(app, "is_connected", False) and not getattr(app, "is_initialized", False):
+            if not getattr(app, "is_connected", False) and not getattr(
+                app, "is_initialized", False
+            ):
                 # Client already torn down - don't try to re-enter
                 return ""
         except Exception:
@@ -398,14 +423,16 @@ class SignTaskService:
 
                         if not is_self:
                             if best_timestamp is None or (
-                                message_time is not None and message_time > best_timestamp
+                                message_time is not None
+                                and message_time > best_timestamp
                             ):
                                 best_text = candidate
                                 best_timestamp = message_time
                             break
 
                         if fallback_timestamp is None or (
-                            message_time is not None and message_time > fallback_timestamp
+                            message_time is not None
+                            and message_time > fallback_timestamp
                         ):
                             fallback_text = candidate
                             fallback_timestamp = message_time
@@ -419,9 +446,11 @@ class SignTaskService:
 
     def _cleanup_old_logs(self):
         """清理超过 3 天的日志（JSON 兼容文件 + SQLite 主存储）"""
-        from datetime import datetime, timedelta
+        from datetime import timedelta
 
-        limit = datetime.now() - timedelta(days=3)
+        from backend.utils.time import utc_now
+
+        limit = utc_now() - timedelta(days=3)
 
         # JSON 兼容文件（按文件 mtime）
         if self.run_history_dir.exists():
@@ -458,7 +487,9 @@ class SignTaskService:
         if source_resolved == target_resolved:
             if str(source) == str(target):
                 return
-            temp_target = source.with_name(f"{source.name}.__rename_tmp__{uuid.uuid4().hex}")
+            temp_target = source.with_name(
+                f"{source.name}.__rename_tmp__{uuid.uuid4().hex}"
+            )
             source.replace(temp_target)
             temp_target.replace(target)
             return
@@ -509,7 +540,9 @@ class SignTaskService:
     ) -> Optional[Path]:
         task_name = validate_storage_name(task_name, field_name="task_name")
         if account_name:
-            account_name = validate_storage_name(account_name, field_name="account_name")
+            account_name = validate_storage_name(
+                account_name, field_name="account_name"
+            )
             account_task_dir = self.signs_dir / account_name / task_name
             if (account_task_dir / "config.json").exists():
                 return account_task_dir
@@ -614,8 +647,7 @@ class SignTaskService:
                 new_config = dict(base_config)
                 new_config["account_name"] = acc
                 try:
-                    with open(target_dir / "config.json", "w", encoding="utf-8") as f:
-                        json.dump(new_config, f, ensure_ascii=False, indent=2)
+                    atomic_write_json(target_dir / "config.json", new_config, indent=2)
                 except Exception:
                     pass
 
@@ -804,7 +836,9 @@ class SignTaskService:
         if len(grouped) == 1:
             target_key = self._task_group_key(grouped[0])
             return [
-                task for task in exact_matches if self._task_group_key(task) == target_key
+                task
+                for task in exact_matches
+                if self._task_group_key(task) == target_key
             ]
         return [exact_matches[0]]
 
@@ -864,10 +898,14 @@ class SignTaskService:
 
         total = len(flow_logs)
         trimmed: List[str] = []
-        for line in flow_logs:
+        truncated = total > self._history_max_flow_lines
+        for line in flow_logs[: self._history_max_flow_lines]:
             text = self._repair_mojibake(str(line)).replace("\r", "").rstrip("\n")
+            if len(text) > self._history_max_line_chars:
+                text = text[: self._history_max_line_chars]
+                truncated = True
             trimmed.append(text)
-        return trimmed, False, total
+        return trimmed, truncated, total
 
     def _load_history_entries(
         self, task_name: str, account_name: str = ""
@@ -877,10 +915,8 @@ class SignTaskService:
             sqlite_entries = self._run_history_store.load_entries(
                 task_name=task_name, account_name=account_name
             )
-            if sqlite_entries:
-                return sqlite_entries
         except Exception:
-            pass
+            sqlite_entries = []
 
         history_file = self._history_file_path(task_name, account_name)
         legacy_file = self.run_history_dir / f"{self._safe_history_key(task_name)}.json"
@@ -891,7 +927,7 @@ class SignTaskService:
             elif not account_name and legacy_file.exists():
                 history_file = legacy_file
             else:
-                return []
+                return sqlite_entries
 
         try:
             with open(history_file, "r", encoding="utf-8") as f:
@@ -917,6 +953,23 @@ class SignTaskService:
             entries.append(item)
 
         entries.sort(key=lambda x: x.get("time", ""), reverse=True)
+        if entries and account_name:
+            try:
+                self._run_history_store.import_entries(
+                    task_name=task_name,
+                    account_name=account_name,
+                    entries=entries,
+                    max_entries=self._history_max_entries,
+                )
+                return self._run_history_store.load_entries(
+                    task_name=task_name, account_name=account_name
+                )
+            except Exception as exc:
+                _service_logger.debug(f"迁移 JSON 运行历史失败: {exc}")
+        if sqlite_entries:
+            return self._run_history_store.load_entries(
+                task_name=task_name, account_name=account_name
+            )
         return entries
 
     def _resolve_existing_history_file(
@@ -966,8 +1019,7 @@ class SignTaskService:
                         config["last_run"] = last_run
                     else:
                         config.pop("last_run", None)
-                    with open(config_file, "w", encoding="utf-8") as f:
-                        json.dump(config, f, ensure_ascii=False, indent=2)
+                    atomic_write_json(config_file, config, indent=2)
                 except Exception:
                     pass
 
@@ -975,7 +1027,10 @@ class SignTaskService:
             for task in self._tasks_cache:
                 if not isinstance(task, dict):
                     continue
-                if task.get("name") != task_name or task.get("account_name") != account_name:
+                if (
+                    task.get("name") != task_name
+                    or task.get("account_name") != account_name
+                ):
                     continue
                 if last_run:
                     task["last_run"] = last_run
@@ -1014,7 +1069,9 @@ class SignTaskService:
                     "time": item.get("time", ""),
                     "success": bool(item.get("success", False)),
                     "message": self._repair_mojibake(item.get("message", "") or ""),
-                    "flow_logs": [self._repair_mojibake(str(line)) for line in flow_logs],
+                    "flow_logs": [
+                        self._repair_mojibake(str(line)) for line in flow_logs
+                    ],
                     "flow_truncated": bool(item.get("flow_truncated", False)),
                     "flow_line_count": int(item.get("flow_line_count", len(flow_logs))),
                 }
@@ -1062,9 +1119,10 @@ class SignTaskService:
                                     self._repair_mojibake(str(line))
                                     for line in flow_logs
                                 ]
-                            data["last_target_message"] = (
-                                str(data.get("last_target_message") or "").strip()
-                                or extract_last_target_message(data.get("flow_logs"))
+                            data["last_target_message"] = str(
+                                data.get("last_target_message") or ""
+                            ).strip() or extract_last_target_message(
+                                data.get("flow_logs")
                             )
                             all_history.append(data)
             except Exception:
@@ -1102,11 +1160,16 @@ class SignTaskService:
                 recent.append(
                     {
                         "time": item.get("time", ""),
+                        "run_id": str(item.get("run_id") or ""),
                         "success": bool(item.get("success", False)),
                         "message": self._repair_mojibake(item.get("message", "") or ""),
-                        "flow_logs": [self._repair_mojibake(str(line)) for line in flow_logs],
+                        "flow_logs": [
+                            self._repair_mojibake(str(line)) for line in flow_logs
+                        ],
                         "flow_truncated": bool(item.get("flow_truncated", False)),
-                        "flow_line_count": int(item.get("flow_line_count", len(flow_logs))),
+                        "flow_line_count": int(
+                            item.get("flow_line_count", len(flow_logs))
+                        ),
                         "task_name": task_name,
                         "account_name": account_name,
                         "last_target_message": str(
@@ -1154,7 +1217,9 @@ class SignTaskService:
                 continue
             seen_pairs.add(pair)
 
-            history = self._load_history_entries(task_name, account_name=current_account)
+            history = self._load_history_entries(
+                task_name, account_name=current_account
+            )
             for item in history:
                 timestamp = str(item.get("time") or "")
                 if normalized_date and not timestamp.startswith(normalized_date):
@@ -1167,11 +1232,16 @@ class SignTaskService:
                 history_items.append(
                     {
                         "time": timestamp,
+                        "run_id": str(item.get("run_id") or ""),
                         "success": bool(item.get("success", False)),
                         "message": self._repair_mojibake(item.get("message", "") or ""),
-                        "flow_logs": [self._repair_mojibake(str(line)) for line in flow_logs],
+                        "flow_logs": [
+                            self._repair_mojibake(str(line)) for line in flow_logs
+                        ],
                         "flow_truncated": bool(item.get("flow_truncated", False)),
-                        "flow_line_count": int(item.get("flow_line_count", len(flow_logs))),
+                        "flow_line_count": int(
+                            item.get("flow_line_count", len(flow_logs))
+                        ),
                         "task_name": task_name,
                         "account_name": current_account,
                         "last_target_message": str(
@@ -1188,21 +1258,26 @@ class SignTaskService:
         self,
         account_name: str,
         task_name: str,
-        created_at: str,
+        created_at: str = "",
+        run_id: str = "",
     ) -> Optional[Dict[str, Any]]:
         normalized_account = validate_storage_name(
             account_name, field_name="account_name"
         )
         normalized_task = validate_storage_name(task_name, field_name="task_name")
         target_time = str(created_at or "").strip()
-        if not target_time:
+        target_run_id = str(run_id or "").strip()
+        if not target_time and not target_run_id:
             return None
 
         for item in self._load_history_entries(
             normalized_task, account_name=normalized_account
         ):
             timestamp = str(item.get("time") or "")
-            if timestamp != target_time:
+            if target_run_id:
+                if str(item.get("run_id") or "") != target_run_id:
+                    continue
+            elif timestamp != target_time:
                 continue
 
             flow_logs = item.get("flow_logs")
@@ -1211,6 +1286,7 @@ class SignTaskService:
 
             return {
                 "time": timestamp,
+                "run_id": str(item.get("run_id") or ""),
                 "success": bool(item.get("success", False)),
                 "message": self._repair_mojibake(item.get("message", "") or ""),
                 "flow_logs": [self._repair_mojibake(str(line)) for line in flow_logs],
@@ -1218,7 +1294,9 @@ class SignTaskService:
                 "flow_line_count": int(item.get("flow_line_count", len(flow_logs))),
                 "task_name": normalized_task,
                 "account_name": normalized_account,
-                "last_target_message": str(item.get("last_target_message") or "").strip()
+                "last_target_message": str(
+                    item.get("last_target_message") or ""
+                ).strip()
                 or extract_last_target_message(flow_logs),
             }
 
@@ -1228,14 +1306,16 @@ class SignTaskService:
         self,
         account_name: str,
         task_name: str,
-        created_at: str,
+        created_at: str = "",
+        run_id: str = "",
     ) -> bool:
         normalized_account = validate_storage_name(
             account_name, field_name="account_name"
         )
         normalized_task = validate_storage_name(task_name, field_name="task_name")
         target_time = str(created_at or "").strip()
-        if not target_time:
+        target_run_id = str(run_id or "").strip()
+        if not target_time and not target_run_id:
             return False
 
         # 5.4：优先从 SQLite 主存储删除；JSON 文件回退/同步
@@ -1246,6 +1326,7 @@ class SignTaskService:
                     task_name=normalized_task,
                     account_name=normalized_account,
                     time=target_time,
+                    run_id=target_run_id,
                 )
                 > 0
             )
@@ -1276,7 +1357,13 @@ class SignTaskService:
             entry_account = str(entry.get("account_name") or "")
             account_matches = not entry_account or entry_account == normalized_account
 
-            if not deleted and entry_time == target_time and account_matches:
+            entry_run_id = str(entry.get("run_id") or "")
+            matches_target = (
+                entry_run_id == target_run_id
+                if target_run_id
+                else entry_time == target_time
+            )
+            if not deleted and matches_target and account_matches:
                 deleted = True
                 continue
 
@@ -1286,8 +1373,7 @@ class SignTaskService:
             return False
 
         if kept_entries:
-            with open(history_file, "w", encoding="utf-8") as f:
-                json.dump(kept_entries, f, ensure_ascii=False, indent=2)
+            atomic_write_json(history_file, kept_entries, indent=2)
         else:
             try:
                 history_file.unlink()
@@ -1298,9 +1384,12 @@ class SignTaskService:
             entry
             for entry in kept_entries
             if isinstance(entry, dict)
-            and str(entry.get("account_name") or normalized_account) == normalized_account
+            and str(entry.get("account_name") or normalized_account)
+            == normalized_account
         ]
-        remaining_entries.sort(key=lambda item: str(item.get("time") or ""), reverse=True)
+        remaining_entries.sort(
+            key=lambda item: str(item.get("time") or ""), reverse=True
+        )
         latest_entry = remaining_entries[0] if remaining_entries else None
         self._set_task_last_run_metadata(
             normalized_task,
@@ -1338,8 +1427,7 @@ class SignTaskService:
             if "last_run" not in config:
                 return
             del config["last_run"]
-            with open(config_file, "w", encoding="utf-8") as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
+            atomic_write_json(config_file, config, indent=2)
         except Exception:
             pass
 
@@ -1432,7 +1520,9 @@ class SignTaskService:
                     pass
                 continue
 
-            legacy_file = self.run_history_dir / f"{self._safe_history_key(task_name)}.json"
+            legacy_file = (
+                self.run_history_dir / f"{self._safe_history_key(task_name)}.json"
+            )
             if not legacy_file.exists():
                 continue
 
@@ -1496,26 +1586,30 @@ class SignTaskService:
     def _get_last_run_info(
         self, task_dir: Path, account_name: str = ""
     ) -> Optional[Dict[str, Any]]:
-        """
-        获取任务的最后执行信息
-        """
-        history_file = self._history_file_path(task_dir.name, account_name)
-        legacy_file = self.run_history_dir / f"{task_dir.name}.json"
+        """获取任务最后执行信息，优先从 SQLite 主存储读取。"""
+        task_name = task_dir.name
+        try:
+            entries = self._run_history_store.load_entries(
+                task_name=task_name, account_name=account_name
+            )
+            if entries:
+                return entries[0]
+        except Exception:
+            pass
 
+        history_file = self._history_file_path(task_name, account_name)
+        legacy_file = self.run_history_dir / f"{task_name}.json"
+        if not history_file.exists() and account_name and legacy_file.exists():
+            history_file = legacy_file
         if not history_file.exists():
-            if account_name and legacy_file.exists():
-                history_file = legacy_file
-            else:
-                return None
+            return None
 
         try:
             with open(history_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, list) and len(data) > 0:
-                    return data[0]  # 最近的一条
-                elif isinstance(data, dict):
-                    return data
-                return None
+            if isinstance(data, list) and data:
+                return data[0]
+            return data if isinstance(data, dict) else None
         except Exception:
             return None
 
@@ -1528,8 +1622,6 @@ class SignTaskService:
         flow_logs: Optional[List[str]] = None,
     ):
         """保存任务执行历史 (保留列表)"""
-        from datetime import datetime
-
         history_file = self._history_file_path(task_name, account_name)
         normalized_logs, flow_truncated, flow_line_count = self._normalize_flow_logs(
             flow_logs
@@ -1538,13 +1630,13 @@ class SignTaskService:
 
         # 每次运行都有唯一 run_id：优先取当前运行状态中的 run_id，
         # 未走 start_task_run 的直调路径则新生成一个。
-        current_status = self._run_statuses.get(
-            self._task_key(account_name, task_name)
-        ) or {}
+        current_status = (
+            self._run_statuses.get(self._task_key(account_name, task_name)) or {}
+        )
         run_id = str(current_status.get("run_id") or "") or uuid.uuid4().hex
 
         new_entry = {
-            "time": datetime.now().isoformat(),
+            "time": utc_now_iso(),
             "success": success,
             "message": self._repair_mojibake(message),
             "account_name": account_name,
@@ -1583,8 +1675,7 @@ class SignTaskService:
             _service_logger.debug(f"写入 SQLite 运行历史失败: {e}")
 
         try:
-            with open(history_file, "w", encoding="utf-8") as f:
-                json.dump(history, f, ensure_ascii=False, indent=2)
+            atomic_write_json(history_file, history, indent=2)
 
             # 同时更新任务配置中的 last_run
             # 1. 更新磁盘上的 config.json
@@ -1605,8 +1696,7 @@ class SignTaskService:
                         with open(config_file, "r", encoding="utf-8") as f:
                             config = json.load(f)
                         config["last_run"] = new_entry
-                        with open(config_file, "w", encoding="utf-8") as f:
-                            json.dump(config, f, ensure_ascii=False, indent=2)
+                        atomic_write_json(config_file, config, indent=2)
                     except Exception as e:
                         _service_logger.debug(f"更新任务配置 last_run 失败: {e}")
 
@@ -1625,11 +1715,11 @@ class SignTaskService:
             logs_dir = settings.resolve_logs_dir()
             logs_dir.mkdir(parents=True, exist_ok=True)
             log_path = logs_dir / filename
-            with open(log_path, 'a', encoding='utf-8') as f:
-                f.write(f'{message}\n')
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"{message}\n")
         except Exception as e:
-            logging.getLogger('backend.sign_tasks').warning(
-                'Failed to write scheduler log %s: %s', filename, e
+            logging.getLogger("backend.sign_tasks").warning(
+                "Failed to write scheduler log %s: %s", filename, e
             )
 
     def _get_effective_proxy(self, account_name: str) -> Optional[str]:
@@ -1639,7 +1729,9 @@ class SignTaskService:
         try:
             from backend.services.config import get_config_service
 
-            global_proxy = get_config_service().get_global_settings().get("global_proxy")
+            global_proxy = (
+                get_config_service().get_global_settings().get("global_proxy")
+            )
             if isinstance(global_proxy, str) and global_proxy.strip():
                 return global_proxy.strip()
         except Exception:
@@ -1780,9 +1872,8 @@ class SignTaskService:
         notify_on_failure: bool = True,
     ) -> Optional[str]:
         stored_status = get_account_status(account_name)
-        if (
-            stored_status.get("status") == "invalid"
-            and stored_status.get("needs_relogin")
+        if stored_status.get("status") == "invalid" and stored_status.get(
+            "needs_relogin"
         ):
             message = (
                 str(stored_status.get("message") or "").strip()
@@ -1816,7 +1907,11 @@ class SignTaskService:
         needs_relogin = bool(result.get("needs_relogin"))
         status = str(result.get("status") or "")
         code = str(result.get("code") or "")
-        if needs_relogin or status in {"invalid", "not_found"} or code == "ACCOUNT_SESSION_INVALID":
+        if (
+            needs_relogin
+            or status in {"invalid", "not_found"}
+            or code == "ACCOUNT_SESSION_INVALID"
+        ):
             message = (
                 str(result.get("message") or "").strip()
                 or f"账号 {account_name} 登录已失效，请重新登录"
@@ -2010,8 +2105,7 @@ class SignTaskService:
         config_file = task_dir / "config.json"
 
         try:
-            with open(config_file, "w", encoding="utf-8") as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
+            atomic_write_json(config_file, config, indent=2)
         except Exception as e:
             _service_logger.debug(f"写入配置文件失败: {str(e)}")
             raise
@@ -2226,9 +2320,13 @@ class SignTaskService:
                         "time": item.get("time", ""),
                         "success": bool(item.get("success", False)),
                         "message": self._repair_mojibake(item.get("message", "") or ""),
-                        "flow_logs": [self._repair_mojibake(str(line)) for line in flow_logs],
+                        "flow_logs": [
+                            self._repair_mojibake(str(line)) for line in flow_logs
+                        ],
                         "flow_truncated": bool(item.get("flow_truncated", False)),
-                        "flow_line_count": int(item.get("flow_line_count", len(flow_logs))),
+                        "flow_line_count": int(
+                            item.get("flow_line_count", len(flow_logs))
+                        ),
                         "account_name": item.get("account_name") or account_name,
                         "last_target_message": str(
                             item.get("last_target_message") or ""
@@ -2301,7 +2399,9 @@ class SignTaskService:
 
         if account_name:
             tasks = [
-                task for task in tasks if str(task.get("account_name") or "") == account_name
+                task
+                for task in tasks
+                if str(task.get("account_name") or "") == account_name
             ]
 
         if aggregate:
@@ -2562,7 +2662,9 @@ class SignTaskService:
             else str(existing.get("execution_mode", "fixed"))
         )
         next_range_start = (
-            range_start if range_start is not None else str(existing.get("range_start", ""))
+            range_start
+            if range_start is not None
+            else str(existing.get("range_start", ""))
         )
         next_range_end = (
             range_end if range_end is not None else str(existing.get("range_end", ""))
@@ -2633,7 +2735,9 @@ class SignTaskService:
                 add_or_update_sign_task_job(
                     current_account,
                     task_name,
-                    next_range_start if next_execution_mode == "range" else next_sign_at,
+                    next_range_start
+                    if next_execution_mode == "range"
+                    else next_sign_at,
                     enabled=True,
                     daily_times=next_daily_times,
                     execution_mode=next_execution_mode,
@@ -2732,7 +2836,8 @@ class SignTaskService:
                 for item in raw_data:
                     if (
                         isinstance(item, dict)
-                        and str(item.get("account_name") or "").strip() == old_account_name
+                        and str(item.get("account_name") or "").strip()
+                        == old_account_name
                     ):
                         item["account_name"] = new_account_name
                 history_file.write_text(
@@ -2765,9 +2870,7 @@ class SignTaskService:
 
         self._tasks_cache = None
 
-    def delete_task(
-        self, task_name: str, account_name: Optional[str] = None
-    ) -> bool:
+    def delete_task(self, task_name: str, account_name: Optional[str] = None) -> bool:
         """Delete one task or one shared multi-account task set."""
         task_name = validate_storage_name(task_name, field_name="task_name")
         related_tasks = self._find_related_task_infos(task_name, account_name)
@@ -2863,6 +2966,7 @@ class SignTaskService:
 
         is_numeric = q.lstrip("-").isdigit()
         if is_numeric or q.startswith("-100"):
+
             def match(chat: Dict[str, Any]) -> bool:
                 chat_id = chat.get("id")
                 if chat_id is None:
@@ -2934,17 +3038,15 @@ class SignTaskService:
         session_file = session_dir / f"{account_name}.session"
 
         if session_mode == "string":
-            session_string = (
-                get_account_session_string(account_name)
-                or load_session_string_file(session_dir, account_name)
-            )
+            session_string = get_account_session_string(
+                account_name
+            ) or load_session_string_file(session_dir, account_name)
             if not session_string:
                 raise ValueError(f"账号 {account_name} 登录已失效，请重新登录")
         else:
-            fallback_session_string = (
-                get_account_session_string(account_name)
-                or load_session_string_file(session_dir, account_name)
-            )
+            fallback_session_string = get_account_session_string(
+                account_name
+            ) or load_session_string_file(session_dir, account_name)
             if not session_file.exists():
                 if fallback_session_string:
                     session_string = fallback_session_string
@@ -3005,7 +3107,9 @@ class SignTaskService:
 
                             # Try get_dialogs with async for with safety limit
                             try:
-                                async for dialog in active_client.get_dialogs(limit=100):
+                                async for dialog in active_client.get_dialogs(
+                                    limit=100
+                                ):
                                     try:
                                         chat = getattr(dialog, "chat", None)
                                         if chat is None:
@@ -3015,17 +3119,25 @@ class SignTaskService:
                                             continue
 
                                         chat_type = getattr(chat, "type", None)
-                                        type_name = chat_type.name.lower() if chat_type else "private"
+                                        type_name = (
+                                            chat_type.name.lower()
+                                            if chat_type
+                                            else "private"
+                                        )
 
-                                        local_chats.append({
-                                            "id": chat_id,
-                                            "title": getattr(chat, "title", None)
-                                            or getattr(chat, "first_name", None)
-                                            or getattr(chat, "username", None)
-                                            or str(chat_id),
-                                            "username": getattr(chat, "username", None),
-                                            "type": type_name,
-                                        })
+                                        local_chats.append(
+                                            {
+                                                "id": chat_id,
+                                                "title": getattr(chat, "title", None)
+                                                or getattr(chat, "first_name", None)
+                                                or getattr(chat, "username", None)
+                                                or str(chat_id),
+                                                "username": getattr(
+                                                    chat, "username", None
+                                                ),
+                                                "type": type_name,
+                                            }
+                                        )
                                     except Exception:
                                         continue
                             except Exception as e:
@@ -3035,32 +3147,53 @@ class SignTaskService:
 
                             # Fallback: if get_dialogs returned nothing, try search_global
                             if not local_chats:
-                                logger.info("get_dialogs 返回空，尝试 search_global 获取会话")
+                                logger.info(
+                                    "get_dialogs 返回空，尝试 search_global 获取会话"
+                                )
                                 seen_ids: set = set()
                                 for term in ["", "a", "1"]:
                                     try:
-                                        async for msg in active_client.search_global(term, limit=50):
+                                        async for msg in active_client.search_global(
+                                            term, limit=50
+                                        ):
                                             try:
                                                 chat = getattr(msg, "chat", None)
                                                 if chat is None:
                                                     continue
                                                 chat_id = getattr(chat, "id", None)
-                                                if chat_id is None or chat_id in seen_ids:
+                                                if (
+                                                    chat_id is None
+                                                    or chat_id in seen_ids
+                                                ):
                                                     continue
                                                 seen_ids.add(chat_id)
 
                                                 chat_type = getattr(chat, "type", None)
-                                                type_name = chat_type.name.lower() if chat_type else "private"
+                                                type_name = (
+                                                    chat_type.name.lower()
+                                                    if chat_type
+                                                    else "private"
+                                                )
 
-                                                local_chats.append({
-                                                    "id": chat_id,
-                                                    "title": getattr(chat, "title", None)
-                                                    or getattr(chat, "first_name", None)
-                                                    or getattr(chat, "username", None)
-                                                    or str(chat_id),
-                                                    "username": getattr(chat, "username", None),
-                                                    "type": type_name,
-                                                })
+                                                local_chats.append(
+                                                    {
+                                                        "id": chat_id,
+                                                        "title": getattr(
+                                                            chat, "title", None
+                                                        )
+                                                        or getattr(
+                                                            chat, "first_name", None
+                                                        )
+                                                        or getattr(
+                                                            chat, "username", None
+                                                        )
+                                                        or str(chat_id),
+                                                        "username": getattr(
+                                                            chat, "username", None
+                                                        ),
+                                                        "type": type_name,
+                                                    }
+                                                )
                                             except Exception:
                                                 continue
                                     except Exception:
@@ -3081,7 +3214,9 @@ class SignTaskService:
                         try:
                             from tg_signer.core import close_client_by_name
 
-                            await close_client_by_name(account_name, workdir=session_dir)
+                            await close_client_by_name(
+                                account_name, workdir=session_dir
+                            )
                         except Exception:
                             pass
                         used_fallback_session = True
@@ -3150,7 +3285,9 @@ class SignTaskService:
             monitor_logs = []
 
         if account_name:
-            logs = list(self._active_logs.get(self._task_key(account_name, task_name), []))
+            logs = list(
+                self._active_logs.get(self._task_key(account_name, task_name), [])
+            )
             if monitor_logs:
                 if logs:
                     logs.append("---- 关键词后台监听日志 ----")
@@ -3176,12 +3313,26 @@ class SignTaskService:
     ) -> None:
         """把最新运行状态原子写入磁盘，供重启/多 worker 恢复。"""
         try:
-            atomic_write_json(self._run_status_file_path(account_name, task_name), status)
+            self._run_state_store.save(status)
+            atomic_write_json(
+                self._run_status_file_path(account_name, task_name), status
+            )
         except Exception as e:  # pragma: no cover - IO 失败不阻断主流程
             _service_logger.debug(f"持久化运行状态失败: {e}")
 
     def _load_persisted_run_statuses(self) -> None:
         """启动时从磁盘恢复最近运行状态（每个任务保留最新一条）。"""
+        for data in self._run_state_store.latest_states():
+            account_name = str(data.get("account_name") or "")
+            task_name = str(data.get("task_name") or "")
+            if account_name and task_name:
+                if data.get("state") == "running":
+                    data["state"] = "cancelled"
+                    data["success"] = False
+                    data["error"] = str(data.get("error") or "") or "进程重启，运行中断"
+                    data["finished_at"] = utc_now_iso()
+                    self._persist_run_status(account_name, task_name, data)
+                self._run_statuses[self._task_key(account_name, task_name)] = data
         if not self._run_status_dir.exists():
             return
         for status_file in self._run_status_dir.glob("*.json"):
@@ -3195,6 +3346,9 @@ class SignTaskService:
                 if not account_name or not task_name:
                     continue
                 task_key = self._task_key(account_name, task_name)
+                # SQLite is authoritative when it already has this task's run.
+                if task_key in self._run_statuses:
+                    continue
                 # 重启前状态为 running 的运行已随进程结束，标记为 cancelled（中断）
                 state = data.get("state")
                 if state == "running":
@@ -3202,6 +3356,9 @@ class SignTaskService:
                     data["success"] = False
                     data["error"] = str(data.get("error") or "") or "进程重启，运行中断"
                     data["finished_at"] = utc_now_iso()
+                    # Persist the recovered terminal state so a second restart
+                    # cannot interpret the same run as newly interrupted.
+                    self._persist_run_status(account_name, task_name, data)
                 self._run_statuses[task_key] = data
             except Exception as e:  # pragma: no cover
                 _service_logger.debug(f"恢复运行状态失败 {status_file.name}: {e}")
@@ -3213,6 +3370,7 @@ class SignTaskService:
         *,
         run_id: str,
         state: str,
+        source: RunSource = "manual",
         success: Optional[bool] = None,
         error: str = "",
         output: str = "",
@@ -3234,9 +3392,18 @@ class SignTaskService:
             # 额外冗余字段，便于磁盘恢复时重建 key
             "account_name": account_name,
             "task_name": task_name,
+            "source": source,
         }
         self._run_statuses[task_key] = status
         self._persist_run_status(account_name, task_name, status)
+        _service_logger.info(
+            "Sign task run state account=%s task=%s run_id=%s source=%s state=%s",
+            account_name,
+            task_name,
+            run_id,
+            source,
+            state,
+        )
         return dict(status)
 
     def _schedule_run_status_cleanup(self, account_name: str, task_name: str) -> None:
@@ -3265,13 +3432,40 @@ class SignTaskService:
             description=f"run status cleanup {account_name}/{task_name}",
         )
 
-    async def start_task_run(self, account_name: str, task_name: str) -> Dict[str, Any]:
+    async def start_task_run(
+        self,
+        account_name: str,
+        task_name: str,
+        *,
+        source: RunSource = "api",
+    ) -> Dict[str, Any]:
         account_name = validate_storage_name(account_name, field_name="account_name")
         task_name = validate_storage_name(task_name, field_name="task_name")
 
         task_key = self._task_key(account_name, task_name)
+        context = await self._run_coordinator.try_reserve(
+            account_name, task_name, source=source
+        )
+        if context is None:
+            existing_status = self._run_statuses.get(task_key)
+            return (
+                dict(existing_status)
+                if existing_status
+                else {
+                    "run_id": "",
+                    "state": "running",
+                    "success": None,
+                    "error": "",
+                    "output": "",
+                    "started_at": utc_now_iso(),
+                    "finished_at": None,
+                }
+            )
         existing_status = self._run_statuses.get(task_key)
-        if self._active_tasks.get(task_key):
+        if self._active_tasks.get(task_key) or (
+            existing_status and existing_status.get("state") == "running"
+        ):
+            await self._run_coordinator.release(context)
             if existing_status:
                 return dict(existing_status)
             return {
@@ -3286,27 +3480,36 @@ class SignTaskService:
 
         task = self.get_task(task_name, account_name=account_name)
         if not task:
+            await self._run_coordinator.release(context)
             raise ValueError(f"Task {task_name} does not exist or cannot be loaded")
 
-        run_id = uuid.uuid4().hex
-        started_at = utc_now_iso()
         status = self._set_run_status(
             account_name,
             task_name,
-            run_id=run_id,
+            run_id=context.run_id,
             state="running",
+            source=context.source,
             success=None,
             error="",
             output="",
-            started_at=started_at,
+            started_at=context.started_at,
             finished_at=None,
         )
 
         async def runner() -> None:
-            result: Dict[str, Any]
+            result: Dict[str, Any] = {
+                "success": False,
+                "error": "Task execution did not complete",
+                "output": "",
+            }
             state = "finished"
             try:
-                result = await self.run_task_with_logs(account_name, task_name)
+                result = await self.run_task_with_logs(
+                    account_name,
+                    task_name,
+                    run_id=context.run_id,
+                    source=context.source,
+                )
             except asyncio.CancelledError:
                 state = "cancelled"
                 result = {
@@ -3320,28 +3523,48 @@ class SignTaskService:
                     "error": str(exc) or "Task execution failed",
                     "output": "",
                 }
+            finally:
+                try:
+                    current_status = self._run_statuses.get(task_key)
+                    if (
+                        current_status
+                        and current_status.get("run_id") == context.run_id
+                    ):
+                        self._set_run_status(
+                            account_name,
+                            task_name,
+                            run_id=context.run_id,
+                            state=state,
+                            source=context.source,
+                            success=bool(result.get("success", False)),
+                            error=str(result.get("error") or ""),
+                            output=str(result.get("output") or ""),
+                            started_at=context.started_at,
+                            finished_at=utc_now_iso(),
+                        )
+                        self._schedule_run_status_cleanup(account_name, task_name)
+                except Exception:
+                    _service_logger.exception(
+                        "Failed to persist terminal sign task status "
+                        "account=%s task=%s run_id=%s",
+                        account_name,
+                        task_name,
+                        context.run_id,
+                    )
+                finally:
+                    self._background_run_tasks.pop(task_key, None)
+                    await self._run_coordinator.release(context)
 
-            current_status = self._run_statuses.get(task_key)
-            if current_status and current_status.get("run_id") == run_id:
-                self._set_run_status(
-                    account_name,
-                    task_name,
-                    run_id=run_id,
-                    state=state,
-                    success=bool(result.get("success", False)),
-                    error=str(result.get("error") or ""),
-                    output=str(result.get("output") or ""),
-                    started_at=started_at,
-                    finished_at=utc_now_iso(),
-                )
-                self._schedule_run_status_cleanup(account_name, task_name)
-            self._background_run_tasks.pop(task_key, None)
-
-        background_task = create_logged_task(
-            runner(),
-            logger=logging.getLogger("backend.sign_tasks"),
-            description=f"sign task run {account_name}/{task_name}",
-        )
+        try:
+            background_task = create_logged_task(
+                runner(),
+                logger=logging.getLogger("backend.sign_tasks"),
+                description=f"sign task run {account_name}/{task_name}",
+            )
+        except Exception:
+            self._run_statuses.pop(task_key, None)
+            await self._run_coordinator.release(context)
+            raise
         self._background_run_tasks[task_key] = background_task
         return status
 
@@ -3353,6 +3576,10 @@ class SignTaskService:
 
         task_key = self._task_key(account_name, task_name)
         status = self._run_statuses.get(task_key)
+        if run_id:
+            persisted = self._run_state_store.get(run_id)
+            if persisted is not None:
+                return persisted
         if not status:
             return {
                 "run_id": run_id or "",
@@ -3375,11 +3602,66 @@ class SignTaskService:
             }
         return dict(status)
 
-    def is_task_running(self, task_name: str, account_name: Optional[str] = None) -> bool:
+    async def cancel_task_run(
+        self, account_name: str, task_name: str, *, run_id: str
+    ) -> Dict[str, Any]:
+        """Cancel an API-started run only when its run_id still matches."""
+        account_name = validate_storage_name(account_name, field_name="account_name")
+        task_name = validate_storage_name(task_name, field_name="task_name")
+        task_key = self._task_key(account_name, task_name)
+        status = self._run_statuses.get(task_key)
+        background_task = self._background_run_tasks.get(task_key)
+        if not status or status.get("run_id") != run_id:
+            persisted = self._run_state_store.get(run_id)
+            if persisted is not None:
+                return persisted
+            raise ValueError("任务运行不存在或已被新的运行替代")
+        if status.get("state") != "running" or background_task is None:
+            return dict(status)
+        background_task.cancel()
+        # A task cancelled before its first scheduling point never enters the
+        # runner body, so the endpoint must persist the terminal state itself.
+        cancelled = self._set_run_status(
+            account_name,
+            task_name,
+            run_id=run_id,
+            state="cancelled",
+            source=str(status.get("source") or "api"),
+            success=False,
+            error="Task execution cancelled",
+            output=str(status.get("output") or ""),
+            started_at=str(status.get("started_at") or utc_now_iso()),
+            finished_at=utc_now_iso(),
+        )
+        self._background_run_tasks.pop(task_key, None)
+        await self._run_coordinator.release(
+            RunContext(
+                run_id=run_id,
+                account_name=account_name,
+                task_name=task_name,
+                source=str(status.get("source") or "api"),
+                started_at=str(status.get("started_at") or utc_now_iso()),
+            )
+        )
+        try:
+            await background_task
+        except asyncio.CancelledError:
+            pass
+        return cancelled
+
+    def is_task_running(
+        self, task_name: str, account_name: Optional[str] = None
+    ) -> bool:
         """检查任务是否正在运行"""
         if account_name:
-            return self._active_tasks.get(self._task_key(account_name, task_name), False)
-        return any(key[1] == task_name for key, running in self._active_tasks.items() if running)
+            return self._active_tasks.get(
+                self._task_key(account_name, task_name), False
+            )
+        return any(
+            key[1] == task_name
+            for key, running in self._active_tasks.items()
+            if running
+        )
 
     async def run_task_with_logs(
         self,
@@ -3388,6 +3670,7 @@ class SignTaskService:
         *,
         lock_already_held: bool = False,
         run_id: Optional[str] = None,
+        source: RunSource = "manual",
     ) -> Dict[str, Any]:
         """运行任务并实时捕获日志 (In-Process)。
 
@@ -3399,41 +3682,46 @@ class SignTaskService:
         account_name = validate_storage_name(account_name, field_name="account_name")
         task_name = validate_storage_name(task_name, field_name="task_name")
 
-        if self.is_task_running(task_name, account_name):
-            return {"success": False, "error": "任务已经在运行中", "output": ""}
-
-        # 初始化账号锁（跨服务共享）
-        if account_name not in self._account_locks:
-            self._account_locks[account_name] = get_account_lock(account_name)
-
-        account_lock = self._account_locks[account_name]
-
-        # 检查是否能获取锁 (非阻塞检查，如果已被锁定则说明该账号有其他任务在运行)
-        # 这里我们希望排队等待，还是直接报错？
-        # 考虑到定时任务同时触发，应该排队执行。
-        _service_logger.debug(f"等待获取账号锁 {account_name}...")
-
         task_key = self._task_key(account_name, task_name)
-        self._active_tasks[task_key] = True
-        self._active_logs[task_key] = []
-
-        # DB task 复用进程内执行时：状态机由本方法管理，run_id 由调用方传入
-        # （否则沿用现状：直调路径不写 run status，由 start_task_run 管理）。
-        manage_run_status = bool(lock_already_held)
-        if manage_run_status:
+        # Reserve the task key before waiting for the account lock. This closes
+        # the window where two direct calls both pass the running check.
+        start_lock = self._run_start_locks.setdefault(task_key, asyncio.Lock())
+        async with start_lock:
+            if self._active_tasks.get(task_key):
+                return {"success": False, "error": "任务已经在运行中", "output": ""}
+            self._active_tasks[task_key] = True
+            self._active_logs[task_key] = []
             if not run_id:
                 run_id = uuid.uuid4().hex
-            self._set_run_status(
-                account_name,
-                task_name,
-                run_id=run_id,
-                state="running",
-                success=None,
-                error="",
-                output="",
-                started_at=utc_now_iso(),
-                finished_at=None,
-            )
+            try:
+                self._set_run_status(
+                    account_name,
+                    task_name,
+                    run_id=run_id,
+                    state="running",
+                    source=source,
+                    success=None,
+                    error="",
+                    output="",
+                    started_at=utc_now_iso(),
+                    finished_at=None,
+                )
+            except Exception:
+                self._active_tasks[task_key] = False
+                self._active_logs.pop(task_key, None)
+                raise
+
+        # 初始化账号锁（跨服务共享）
+        try:
+            if account_name not in self._account_locks:
+                self._account_locks[account_name] = get_account_lock(account_name)
+            account_lock = self._account_locks[account_name]
+        except Exception:
+            self._active_tasks[task_key] = False
+            self._active_logs.pop(task_key, None)
+            raise
+        _service_logger.debug(f"等待获取账号锁 {account_name}...")
+        manage_run_status = True
 
         # 获取 logger 实例
         tg_logger = logging.getLogger("tg-signer")
@@ -3446,6 +3734,7 @@ class SignTaskService:
         task_notify_on_failure = True
         task_cfg: Optional[Dict[str, Any]] = None
         signer: Optional[BackendUserSigner] = None
+        run_state = "finished"
 
         # 调用方已持锁时跳过获取（DB task 复用进程内执行链路），否则正常排队取锁
         lock_ctx = nullcontext() if lock_already_held else account_lock
@@ -3459,15 +3748,28 @@ class SignTaskService:
             signer_no_updates = not requires_updates
             task_notify_on_failure = bool(task_cfg.get("notify_on_failure", True))
 
-            invalid_reason = await self._check_account_before_task(
-                account_name,
-                task_name,
-                no_updates=signer_no_updates,
-                notify_on_failure=task_notify_on_failure,
-            )
+            # Serialize account checks as well as task execution. DB task
+            # callers already hold this lock and must not re-enter it.
+            if lock_already_held:
+                invalid_reason = await self._check_account_before_task(
+                    account_name,
+                    task_name,
+                    no_updates=signer_no_updates,
+                    notify_on_failure=task_notify_on_failure,
+                )
+            else:
+                async with account_lock:
+                    invalid_reason = await self._check_account_before_task(
+                        account_name,
+                        task_name,
+                        no_updates=signer_no_updates,
+                        notify_on_failure=task_notify_on_failure,
+                    )
             if invalid_reason:
                 account_invalid_detected = True
-                error_msg = f"账号 {account_name} 登录已失效，请重新登录: {invalid_reason}"
+                error_msg = (
+                    f"账号 {account_name} 登录已失效，请重新登录: {invalid_reason}"
+                )
                 self._active_logs[task_key].append(error_msg)
             else:
                 if has_keyword_monitor:
@@ -3502,7 +3804,9 @@ class SignTaskService:
                         tg_logger.setLevel(logging.INFO)
                     tg_logger.addHandler(log_handler)
 
-                    _service_logger.debug(f"已获取账号锁 {account_name}，开始执行任务 {task_name}")
+                    _service_logger.debug(
+                        f"已获取账号锁 {account_name}，开始执行任务 {task_name}"
+                    )
                     self._active_logs[task_key].append(
                         f"开始执行任务: {task_name} (账号: {account_name})"
                     )
@@ -3536,13 +3840,14 @@ class SignTaskService:
                         proxy_dict = build_proxy_dict(proxy_value)
 
                     if session_mode == "string":
-                        session_string = (
-                            get_account_session_string(account_name)
-                            or load_session_string_file(session_dir, account_name)
-                        )
+                        session_string = get_account_session_string(
+                            account_name
+                        ) or load_session_string_file(session_dir, account_name)
                         if not session_string:
                             account_invalid_detected = True
-                            raise ValueError(f"账号 {account_name} 的 session_string 不存在")
+                            raise ValueError(
+                                f"账号 {account_name} 的 session_string 不存在"
+                            )
                         use_in_memory = True
                     else:
                         # File mode: prefer in-memory to avoid SQLite "database is locked"
@@ -3617,10 +3922,17 @@ class SignTaskService:
                     # 增加缓冲时间，防止同账号连续执行任务时，Session文件锁尚未完全释放导致 "database is locked"
                     await asyncio.sleep(2)
 
+        except asyncio.CancelledError:
+            run_state = "cancelled"
+            error_msg = "Task execution cancelled"
+            self._active_logs[task_key].append(error_msg)
+            raise
         except Exception as e:
             if account_invalid_detected or self._is_invalid_session_error(e):
                 account_invalid_detected = True
-                invalid_message = str(e) or f"账号 {account_name} 登录已失效，请重新登录"
+                invalid_message = (
+                    str(e) or f"账号 {account_name} 登录已失效，请重新登录"
+                )
                 await self._mark_account_invalid(
                     account_name,
                     task_name,
@@ -3646,21 +3958,38 @@ class SignTaskService:
                 last_reply = ""
                 if success:
                     for line in reversed(final_logs):
-                        if "收到来自「" in line and ("」的消息:" in line or "」对消息的更新，消息:" in line):
+                        if "收到来自「" in line and (
+                            "」的消息:" in line or "」对消息的更新，消息:" in line
+                        ):
                             try:
-                                splitter = "」的消息:" if "」的消息:" in line else "」对消息的更新，消息:"
+                                splitter = (
+                                    "」的消息:"
+                                    if "」的消息:" in line
+                                    else "」对消息的更新，消息:"
+                                )
                                 reply_part = line.split(splitter, 1)[-1].strip()
                                 if reply_part.startswith("Message:"):
-                                    reply_part = reply_part[len("Message:"):].strip()
+                                    reply_part = reply_part[len("Message:") :].strip()
 
                                 if "text: " in reply_part:
-                                    text_content = reply_part.split("text: ", 1)[-1].split("\n")[0].strip()
+                                    text_content = (
+                                        reply_part.split("text: ", 1)[-1]
+                                        .split("\n")[0]
+                                        .strip()
+                                    )
                                     if text_content:
                                         last_reply = text_content
                                     elif "图片: " in reply_part:
-                                        last_reply = "[图片] " + reply_part.split("图片: ", 1)[-1].split("\n")[0].strip()
+                                        last_reply = (
+                                            "[图片] "
+                                            + reply_part.split("图片: ", 1)[-1]
+                                            .split("\n")[0]
+                                            .strip()
+                                        )
                                     else:
-                                        last_reply = reply_part.replace("\n", " ").strip()
+                                        last_reply = reply_part.replace(
+                                            "\n", " "
+                                        ).strip()
                                 else:
                                     last_reply = reply_part.replace("\n", " ").strip()
 
@@ -3684,10 +4013,9 @@ class SignTaskService:
                             "invalid",
                             "not found",
                         )
-                        if (
-                            any(keyword in reply_lower for keyword in failure_keywords)
-                            and self._message_indicates_strong_failure(last_reply)
-                        ):
+                        if any(
+                            keyword in reply_lower for keyword in failure_keywords
+                        ) and self._message_indicates_strong_failure(last_reply):
                             success = False
                             error_msg = f"机器人回复疑似失败: {last_reply}"
                             final_logs.append(error_msg)
@@ -3709,14 +4037,14 @@ class SignTaskService:
                                 timeout=last_target_fetch_timeout,
                             )
                         else:
-                            last_target_message = await self._fetch_last_target_message_from_chat_history(
-                                signer,
-                                task_cfg,
+                            last_target_message = (
+                                await self._fetch_last_target_message_from_chat_history(
+                                    signer,
+                                    task_cfg,
+                                )
                             )
                     except asyncio.TimeoutError:
-                        timeout_log = (
-                            f"补抓任务对象最后消息超时 ({last_target_fetch_timeout:.1f}s)，已跳过"
-                        )
+                        timeout_log = f"补抓任务对象最后消息超时 ({last_target_fetch_timeout:.1f}s)，已跳过"
                         self._active_logs.setdefault(task_key, []).append(timeout_log)
                         final_logs = list(self._active_logs.get(task_key, []))
                         output_str = "\n".join(final_logs)
@@ -3749,8 +4077,8 @@ class SignTaskService:
                         account_name,
                         task_name,
                         run_id=run_id or "",
-                        state="finished",
-                        success=bool(success),
+                        state=run_state,
+                        success=bool(success) if run_state != "cancelled" else False,
                         error=error_msg,
                         output=output_str,
                         started_at=prev_status.get("started_at") or None,
@@ -3758,7 +4086,11 @@ class SignTaskService:
                     )
                     self._schedule_run_status_cleanup(account_name, task_name)
 
-                if not success and not account_invalid_detected and task_notify_on_failure:
+                if (
+                    not success
+                    and not account_invalid_detected
+                    and task_notify_on_failure
+                ):
                     await self._send_failure_notification(
                         account_name,
                         task_name,

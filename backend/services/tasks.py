@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import socket
@@ -18,10 +19,14 @@ from backend.models.task_log import TaskLog
 from backend.utils.account_locks import AccountLockTimeout, get_account_lock
 from backend.utils.time import utc_now_naive
 from tg_signer.async_utils import create_logged_task
+from tg_signer.utils import atomic_write_text
 
 settings = get_settings()
 
 logger = logging.getLogger(__name__)
+
+_MAX_TASK_LOG_BYTES = 4 * 1024 * 1024
+
 
 # 用于实时日志推送的状态跟踪
 _active_tasks: dict[int, bool] = {}
@@ -73,7 +78,11 @@ def cleanup_old_logs(db: Session, days: int = 3) -> int:
                 pass
 
     # 批量删除数据库记录
-    count = db.query(TaskLog).filter(TaskLog.started_at < cutoff).delete(synchronize_session=False)
+    count = (
+        db.query(TaskLog)
+        .filter(TaskLog.started_at < cutoff)
+        .delete(synchronize_session=False)
+    )
     if count > 0:
         db.commit()
     return count
@@ -124,11 +133,22 @@ def delete_task(db: Session, task: Task) -> None:
     db.commit()
 
 
+def _bounded_log_output(output: str) -> str:
+    """Keep diagnostic files bounded while retaining their most recent lines."""
+    max_bytes = int(os.getenv("TASK_LOG_MAX_BYTES", str(_MAX_TASK_LOG_BYTES)))
+    max_bytes = max(1024, max_bytes)
+    encoded = output.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return output
+    tail = encoded[-max_bytes:].decode("utf-8", errors="replace")
+    return "[日志已截断，仅保留末尾内容]\n" + tail
+
+
 def _create_log_file(task: Task) -> Path:
     logs_dir = settings.resolve_logs_dir()
     logs_dir.mkdir(parents=True, exist_ok=True)
-    ts = utc_now_naive().strftime("%Y%m%d_%H%M%S")
-    return logs_dir / f"task_{task.id}_{ts}.log"
+    ts = utc_now_naive().strftime("%Y%m%d_%H%M%S_%f")
+    return logs_dir / f"task_{task.id}_{ts}_{uuid.uuid4().hex[:8]}.log"
 
 
 async def run_task_once(db: Session, task: Task) -> TaskLog:
@@ -150,6 +170,18 @@ async def run_task_once(db: Session, task: Task) -> TaskLog:
     account_lock = get_account_lock(account.account_name)
     try:
         async with account_lock:
+            # The initial check is only an optimization; another caller may have
+            # started while waiting for the account lock.
+            if is_task_running(task.id):
+                existing = (
+                    db.query(TaskLog)
+                    .filter(TaskLog.task_id == task.id, TaskLog.status == "running")
+                    .order_by(TaskLog.id.desc())
+                    .first()
+                )
+                if existing is not None:
+                    return existing
+                return _lock_timeout_task_log(db, task, "task is already running")
             return await _run_task_once_locked(db, task, account)
     except AccountLockTimeout as e:
         logger.warning("任务 %s (账号 %s) 跳过：%s", task.id, account.account_name, e)
@@ -174,9 +206,7 @@ def _lock_timeout_task_log(db: Session, task: Task, reason: str) -> TaskLog:
     return task_log
 
 
-async def _run_task_once_locked(
-    db: Session, task: Task, account: Account
-) -> TaskLog:
+async def _run_task_once_locked(db: Session, task: Task, account: Account) -> TaskLog:
     log_file = _create_log_file(task)
 
     _active_tasks[task.id] = True
@@ -196,6 +226,13 @@ async def _run_task_once_locked(
     db.add(task_log)
     db.commit()
     db.refresh(task_log)
+    logger.info(
+        "Task run started task_id=%s account=%s run_id=%s worker_id=%s",
+        task.id,
+        account.account_name,
+        run_id,
+        task_log.worker_id,
+    )
 
     def log_callback(line: str):
         _active_logs[task.id].append(line)
@@ -239,22 +276,21 @@ async def _run_task_once_locked(
             task.name,
             lock_already_held=True,
             run_id=run_id,
+            source="db_task",
         )
 
         success = bool(result.get("success"))
         full_output = result.get("output") or ""
 
-        # 写入日志文件（完整内容）
-        with open(log_file, "w", encoding="utf-8") as fp:
-            fp.write(full_output)
+        # Write the complete output atomically so readers never observe a
+        # partially written log file after process interruption.
+        atomic_write_text(log_file, _bounded_log_output(full_output))
 
         # 更新数据库记录
         task_log.finished_at = utc_now_naive()
         task_log.status = "success" if success else "failed"
         if not success:
-            task_log.output = (
-                (result.get("error") or full_output or "Failed")[-1000:]
-            )
+            task_log.output = (result.get("error") or full_output or "Failed")[-1000:]
         else:
             task_log.output = "Success"
 
@@ -263,16 +299,49 @@ async def _run_task_once_locked(
 
         task.last_run_at = task_log.finished_at
         db.commit()
+        logger.info(
+            "Task run finished task_id=%s account=%s run_id=%s status=%s",
+            task.id,
+            account.account_name,
+            run_id,
+            task_log.status,
+        )
+    except asyncio.CancelledError:
+        msg = "Task execution cancelled"
+        _active_logs[task.id].append(msg)
+        task_log.status = "cancelled"
+        task_log.output = msg
+        task_log.finished_at = utc_now_naive()
+        db.commit()
+        logger.info(
+            "Task run cancelled task_id=%s account=%s run_id=%s",
+            task.id,
+            account.account_name,
+            run_id,
+        )
+        raise
     except Exception as e:
         msg = f"Error running task: {e}"
         _active_logs[task.id].append(msg)
         task_log.status = "failed"
         task_log.output = msg[-1000:]
+        task_log.finished_at = utc_now_naive()
         db.commit()
+        logger.error(
+            "Task run failed task_id=%s account=%s run_id=%s error=%s",
+            task.id,
+            account.account_name,
+            run_id,
+            msg,
+        )
     finally:
-        # 确保日志桥接协程始终被终止（成功/失败/异常路径统一清理）
+        # Ensure the bridge has stopped before a subsequent run may reuse the
+        # same task log buffer. Merely calling cancel() leaves a scheduling
+        # window where an old bridge can append stale lines.
         if bridge_task is not None:
             bridge_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await bridge_task
         _active_tasks[task.id] = False
 
         # 延迟清理日志
