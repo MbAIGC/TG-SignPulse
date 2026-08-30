@@ -2,7 +2,7 @@ name: Docker Build & Push
 
 on:
   push:
-    branches: [main]
+    branches: [main, old_Stable]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -42,6 +42,7 @@ jobs:
             latest=false
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=old_Stable,enable=${{ github.ref_name == 'old_Stable' }}
             type=semver,pattern={{version}}
             type=sha,format=short
 
