@@ -5,7 +5,9 @@ FROM node:22-alpine AS frontend
 WORKDIR /build/frontend
 
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --no-audit --no-fund
+# --include=dev：vue-tsc/vite 均为 dev 依赖；显式安装避免 npm omit=dev 配置
+# 导致构建命令缺失（与 CI lint-test-build.yml 保持一致）。
+RUN npm ci --include=dev --no-audit --no-fund
 
 COPY frontend/ ./
 RUN npm run build

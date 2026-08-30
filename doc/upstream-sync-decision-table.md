@@ -65,25 +65,36 @@
 > 走 `APScheduler -> run_task_once -> async_run_task_cli -> tg-signer 子进程`，
 > 与进程内 SignTask 是两套执行路径。
 
-**已落地（本次）**：
+**已落地（含本轮 4.2/5.3 进程内化）**：
 - `run_task_once` 已按 `account.account_name` 获取并持有统一 `AccountLock`，
-  覆盖「创建运行记录 -> 启动子进程 -> 等待完成」完整区间（`_run_task_once_locked`），
+  覆盖「创建运行记录 -> 执行 -> 等待完成」完整区间（`_run_task_once_locked`），
   与 SignTask 路径共享同一把锁 → 同账号并发已被进程内 + 跨进程文件锁阻断。
+- ✅ **子进程路径已移除**：`_run_task_once_locked` 改为调用进程内
+  `SignTaskService.run_task_with_logs(lock_already_held=True, run_id=...)`；
+  `backend/cli/tasks.py::async_run_task_cli` 仅保留为命令行兼容入口（`tg-signer run`），
+  Web 调度不再依赖。
+- ✅ **日志/状态对齐**：实时日志由 SignTaskService 维护并桥接回 `_active_logs[task.id]`
+  （DB task WebSocket 继续可用）；`TaskLog.status/output` 由进程内结果映射；
+  `num_of_dialogs` 语义与 SignTask 对齐（进程内固定 20）。
+- ✅ **状态机统一（5.3）**：`run_task_with_logs(manage_run_status)` 写 running/finished
+  状态机（磁盘持久化），TaskLog 与状态机/历史条目的 `run_id` 对齐。
 - 锁超时（`AccountLockTimeout`）写入失败记录（含 `worker_id`），不静默跳过。
 - `TaskLog` 与 SignTask 运行状态均已携带 `worker_id`（pid@hostname），
   多 worker 可排查并发来源。
 
 **现状评估**：
-- DB task 子进程与 SignTask 进程内执行现在**互斥正确**，安全性已达标；
-  子进程路径仍保留（继承的 `Task`/`TaskLog` 记录源 + CLI 兼容），但不再是并发风险源。
-- 主要成本是子进程开销（每次 `tg-signer run` 起一个进程、重新载入 session），
-  以及日志/回调通过 stdout 管道传输的间接性。
+- DB task 与 SignTask 现在**共享同一进程内执行链路**，互斥正确，安全性达标；
+  子进程轨道仅存 CLI 兼容入口，不再是并发风险源。
+- 剩余成本已消除：不再每次 `tg-signer run` 起进程、重新载入 session。
 
-**收敛方向（后续迭代，未在本轮执行）**：
-1. 让 `_job_run_task`（DB task）改为调用进程内 `SignTaskService.run_task_with_logs`，
+**收敛方向（部分已完成）**：
+1. ✅ `_job_run_task`（DB task）改为调用进程内 `SignTaskService.run_task_with_logs`，
    CLI 子进程仅保留为命令行兼容入口（`tg-signer run`）。
-2. 统一 DB task 与 SignTask 的状态机为同一持久化状态机（run_id/state/started/finished/worker_id）。
-3. 逐步弃用 `backend/models/task.py` 的布尔内存状态，统一到磁盘/DB 状态。
+2. ✅ 统一 DB task 与 SignTask 的状态机为同一持久化状态机
+   （run_id/state/started/finished/worker_id），DB task 执行进入 SignTask 状态机。
+3. 🔶 逐步弃用 `backend/models/task.py` 的布尔内存状态，统一到磁盘/DB 状态
+   （TaskLog 仍为 SQLite 审计记录，状态机为磁盘 JSON；如需完全合并为单一存储
+   列入后续迭代）。
 
-> 未执行原因：进程内化会改变日志捕获格式、`num_of_dialogs` 语义与 TaskLog 回写逻辑，
-> 属行为级重构，需在后续迭代配合回归矩阵验证后单独推进；当前互斥已由 AccountLock 闭环。
+> 已执行（本轮）：进程内化 + 状态机统一 + SQLite 历史主存储（见
+> `doc/deployment-verification.md` 与 `doc/fix-plan-2026-08-30.md` 第三轮登记）。

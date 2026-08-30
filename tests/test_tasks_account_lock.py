@@ -71,20 +71,24 @@ def _make_task(db, account_name: str = "acct_lock_test", task_name: str = "task1
 
 
 def test_run_task_once_waits_for_same_account_lock(db_session, monkeypatch):
-    """同账号锁被占用时，run_task_once 等待锁释放后才执行子进程。"""
+    """同账号锁被占用时，run_task_once 等待锁释放后才执行进程内任务。"""
     task = _make_task(db_session)
     lock = account_locks.get_account_lock("acct_lock_test")
 
     calls: list[str] = []
 
-    async def fake_cli(**kwargs):
+    async def fake_run(account_name, task_name, **kwargs):
         # 记录调用时锁的占用状态
-        calls.append(("cli_start", lock.locked()))
+        calls.append(("run_start", lock.locked(), kwargs.get("lock_already_held")))
         await asyncio.sleep(0.05)
-        calls.append(("cli_end", lock.locked()))
-        return (0, "done", "")
+        calls.append(("run_end", lock.locked()))
+        return {"success": True, "output": "done", "error": ""}
 
-    monkeypatch.setattr(tasks_mod, "async_run_task_cli", fake_cli)
+    # 4.2 起 DB task 复用进程内 SignTaskService，mock 单例的 run_task_with_logs
+    from backend.services.sign_tasks import get_sign_task_service
+
+    service = get_sign_task_service()
+    monkeypatch.setattr(service, "run_task_with_logs", fake_run)
 
     async def hold_lock():
         async with lock:
@@ -97,16 +101,18 @@ def test_run_task_once_waits_for_same_account_lock(db_session, monkeypatch):
         log = await run_task_once(db_session, task)
         assert log.status in ("success", "failed")
         await holder
-        # run_task_once 执行期间锁是被占用的（互斥），子进程调用点也持锁
-        cli_calls = [c for c in calls if c[0] == "cli_start"]
-        assert cli_calls, "async_run_task_cli 应被执行"
-        assert cli_calls[0][1] is True
+        # run_task_once 执行期间锁是被占用的（互斥），进程内执行调用点也持锁
+        run_calls = [c for c in calls if c[0] == "run_start"]
+        assert run_calls, "run_task_with_logs 应被执行"
+        assert run_calls[0][1] is True
+        # 调用方已持锁，进程内执行不应再次获取锁（避免同锁复入死锁）
+        assert run_calls[0][2] is True
 
     asyncio.run(main())
 
 
 def test_run_task_once_writes_failure_on_lock_timeout(db_session, monkeypatch, tmp_path):
-    """文件锁超时：写入失败记录并跳过子进程，不静默跳过。"""
+    """文件锁超时：写入失败记录并跳过进程内执行，不静默跳过。"""
     task = _make_task(db_session)
     lock_dir = tmp_path / "locks"
     lock_dir.mkdir(exist_ok=True)
@@ -118,11 +124,14 @@ def test_run_task_once_writes_failure_on_lock_timeout(db_session, monkeypatch, t
 
     cli_called = []
 
-    async def fake_cli(**kwargs):
+    async def fake_run(account_name, task_name, **kwargs):
         cli_called.append(True)
-        return (0, "should not run", "")
+        return {"success": True, "output": "should not run", "error": ""}
 
-    monkeypatch.setattr(tasks_mod, "async_run_task_cli", fake_cli)
+    from backend.services.sign_tasks import get_sign_task_service
+
+    service = get_sign_task_service()
+    monkeypatch.setattr(service, "run_task_with_logs", fake_run)
 
     # 子进程持有文件锁
     holder_code = (
@@ -151,7 +160,7 @@ def test_run_task_once_writes_failure_on_lock_timeout(db_session, monkeypatch, t
         log = asyncio.run(main())
         assert log.status == "failed"
         assert "Account lock timeout" in (log.output or "")
-        assert not cli_called, "锁超时时不应启动子进程"
+        assert not cli_called, "锁超时时不应启动进程内执行"
     finally:
         holder.terminate()
         holder.wait(timeout=5)

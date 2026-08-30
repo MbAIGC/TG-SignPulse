@@ -14,6 +14,7 @@ import socket
 import time
 import traceback
 import uuid
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -147,6 +148,10 @@ class SignTaskService:
         self._run_status_dir = self.run_history_dir / "_run_status"
         self._run_status_dir.mkdir(parents=True, exist_ok=True)
         self._load_persisted_run_statuses()
+        # 5.4：历史统一 SQLite 主存储（JSON 兼容读取）
+        from backend.services.run_history import get_run_history_store
+
+        self._run_history_store = get_run_history_store(self.workdir)
         self._account_cooldown_seconds = int(
             os.getenv("SIGN_TASK_ACCOUNT_COOLDOWN", "5")
         )
@@ -861,6 +866,16 @@ class SignTaskService:
     def _load_history_entries(
         self, task_name: str, account_name: str = ""
     ) -> List[Dict[str, Any]]:
+        # 5.4：优先读 SQLite 主存储；无记录时回退 JSON（首次迁移前的老数据兼容）
+        try:
+            sqlite_entries = self._run_history_store.load_entries(
+                task_name=task_name, account_name=account_name
+            )
+            if sqlite_entries:
+                return sqlite_entries
+        except Exception:
+            pass
+
         history_file = self._history_file_path(task_name, account_name)
         legacy_file = self.run_history_dir / f"{self._safe_history_key(task_name)}.json"
 
@@ -1217,11 +1232,30 @@ class SignTaskService:
         if not target_time:
             return False
 
+        # 5.4：优先从 SQLite 主存储删除；JSON 文件回退/同步
+        sqlite_deleted = False
+        try:
+            sqlite_deleted = (
+                self._run_history_store.delete_entry(
+                    task_name=normalized_task,
+                    account_name=normalized_account,
+                    time=target_time,
+                )
+                > 0
+            )
+        except Exception:
+            sqlite_deleted = False
+
         history_file = self._resolve_existing_history_file(
             normalized_task, normalized_account
         )
-        if history_file is None:
+        if history_file is None and not sqlite_deleted:
             return False
+
+        if history_file is None:
+            # SQLite 有该条但 JSON 文件不存在（旧数据仅 SQLite）
+            self._set_task_last_run_metadata(normalized_task, normalized_account, None)
+            return True
 
         raw_entries = self._load_history_payload_from_file(history_file)
         kept_entries: List[Any] = []
@@ -1242,7 +1276,7 @@ class SignTaskService:
 
             kept_entries.append(entry)
 
-        if not deleted:
+        if not deleted and not sqlite_deleted:
             return False
 
         if kept_entries:
@@ -1307,8 +1341,14 @@ class SignTaskService:
         removed_files = 0
         removed_entries = 0
 
+        # 5.4：清空 SQLite 主存储
+        try:
+            removed_entries += self._run_history_store.clear()
+        except Exception:
+            pass
+
         if not self.run_history_dir.exists():
-            return {"removed_files": 0, "removed_entries": 0}
+            return {"removed_files": removed_files, "removed_entries": removed_entries}
 
         seen_tasks: set[tuple[str, str]] = set()
         for task in self.list_tasks(force_refresh=True, aggregate=False):
@@ -1347,8 +1387,17 @@ class SignTaskService:
         removed_files = 0
         removed_entries = 0
 
+        # 5.4：清空 SQLite 主存储中该账号的历史
+        try:
+            sqlite_count = self._run_history_store.delete_entry(
+                task_name="", account_name=account_name
+            )
+            removed_entries += sqlite_count
+        except Exception:
+            pass
+
         if not self.run_history_dir.exists():
-            return {"removed_files": 0, "removed_entries": 0}
+            return {"removed_files": removed_files, "removed_entries": removed_entries}
 
         tasks = self.list_tasks(account_name=account_name)
         for task in tasks:
@@ -1515,6 +1564,17 @@ class SignTaskService:
         history.insert(0, new_entry)
         # 只保留最近 N 条
         history = history[: self._history_max_entries]
+
+        # 5.4：SQLite 主存储（优先写入；JSON 保留为兼容读取/离线检查）
+        try:
+            self._run_history_store.save_entry(
+                task_name=task_name,
+                account_name=account_name,
+                entry=new_entry,
+                max_entries=self._history_max_entries,
+            )
+        except Exception as e:  # pragma: no cover - SQLite 失败不阻断 JSON 兜底
+            _service_logger.debug(f"写入 SQLite 运行历史失败: {e}")
 
         try:
             with open(history_file, "w", encoding="utf-8") as f:
@@ -3316,9 +3376,19 @@ class SignTaskService:
         return any(key[1] == task_name for key, running in self._active_tasks.items() if running)
 
     async def run_task_with_logs(
-        self, account_name: str, task_name: str
+        self,
+        account_name: str,
+        task_name: str,
+        *,
+        lock_already_held: bool = False,
+        run_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """运行任务并实时捕获日志 (In-Process)"""
+        """运行任务并实时捕获日志 (In-Process)。
+
+        lock_already_held=True 时跳过账号锁获取（调用方已持锁），
+        供 DB task（run_task_once）复用进程内执行链路，避免同锁复入死锁。
+        run_id 供调用方指定执行标识，使 TaskLog 与 SignTask 状态机/历史对齐。
+        """
 
         account_name = validate_storage_name(account_name, field_name="account_name")
         task_name = validate_storage_name(task_name, field_name="task_name")
@@ -3341,6 +3411,24 @@ class SignTaskService:
         self._active_tasks[task_key] = True
         self._active_logs[task_key] = []
 
+        # DB task 复用进程内执行时：状态机由本方法管理，run_id 由调用方传入
+        # （否则沿用现状：直调路径不写 run status，由 start_task_run 管理）。
+        manage_run_status = bool(lock_already_held)
+        if manage_run_status:
+            if not run_id:
+                run_id = uuid.uuid4().hex
+            self._set_run_status(
+                account_name,
+                task_name,
+                run_id=run_id,
+                state="running",
+                success=None,
+                error="",
+                output="",
+                started_at=utc_now_iso(),
+                finished_at=None,
+            )
+
         # 获取 logger 实例
         tg_logger = logging.getLogger("tg-signer")
         log_handler: Optional[TaskLogHandler] = None
@@ -3352,6 +3440,9 @@ class SignTaskService:
         task_notify_on_failure = True
         task_cfg: Optional[Dict[str, Any]] = None
         signer: Optional[BackendUserSigner] = None
+
+        # 调用方已持锁时跳过获取（DB task 复用进程内执行链路），否则正常排队取锁
+        lock_ctx = nullcontext() if lock_already_held else account_lock
 
         try:
             task_cfg = self.get_task(task_name, account_name=account_name)
@@ -3385,7 +3476,7 @@ class SignTaskService:
                             f"关键词后台监听刷新失败: {exc}"
                         )
 
-                async with account_lock:
+                async with lock_ctx:
                     last_end = self._account_last_run_end.get(account_name)
                     if last_end:
                         gap = time.time() - last_end
@@ -3644,6 +3735,22 @@ class SignTaskService:
                     account_name,
                     flow_logs=final_logs,
                 )
+
+                if manage_run_status:
+                    # 保留本次运行的 started_at（_set_run_status 对 None 会回填当前时间）
+                    prev_status = self._run_statuses.get(task_key) or {}
+                    self._set_run_status(
+                        account_name,
+                        task_name,
+                        run_id=run_id or "",
+                        state="finished",
+                        success=bool(success),
+                        error=error_msg,
+                        output=output_str,
+                        started_at=prev_status.get("started_at") or None,
+                        finished_at=utc_now_iso(),
+                    )
+                    self._schedule_run_status_cleanup(account_name, task_name)
 
                 if not success and not account_invalid_detected and task_notify_on_failure:
                     await self._send_failure_notification(

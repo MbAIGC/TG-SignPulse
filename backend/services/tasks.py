@@ -11,7 +11,6 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
-from backend.cli.tasks import async_run_task_cli
 from backend.core.config import get_settings
 from backend.models.account import Account
 from backend.models.task import Task
@@ -183,9 +182,12 @@ async def _run_task_once_locked(
     _active_tasks[task.id] = True
     _active_logs[task.id] = []
 
+    # 运行标识：与 SignTask 状态机/历史条目对齐（run_task_with_logs 复用该 run_id）
+    run_id = uuid.uuid4().hex
+
     task_log = TaskLog(
         task_id=task.id,
-        run_id=uuid.uuid4().hex,
+        run_id=run_id,
         worker_id=_current_worker_id(),
         status="running",
         log_path=str(log_file),
@@ -200,15 +202,47 @@ async def _run_task_once_locked(
         if len(_active_logs[task.id]) > 500:
             _active_logs[task.id].pop(0)
 
+    bridge_task = None
     try:
-        # 使用异步执行调用，并注入回调
-        returncode, stdout, stderr = await async_run_task_cli(
-            account_name=account.account_name,
-            task_name=task.name,
-            callback=log_callback,
+        # 4.2 统一到进程内 SignTaskService 执行链路（不再 spawn tg-signer 子进程）：
+        # - 外层 run_task_once 已持账号锁，此处 lock_already_held=True 避免同锁复入；
+        # - 传入 run_id 使 TaskLog 与 SignTask 运行状态机/历史条目的 run_id 对齐；
+        # - 执行期间实时日志由 SignTaskService 维护，这里周期性桥接到 _active_logs[task.id]
+        #   供 DB task 的 WebSocket 实时推送继续使用。
+        from backend.services.sign_tasks import get_sign_task_service
+
+        sign_service = get_sign_task_service()
+
+        async def bridge_logs() -> None:
+            task_key_last = 0
+            while True:
+                try:
+                    entries = sign_service.get_active_logs(
+                        account.account_name, task.name
+                    )
+                    for line in entries[task_key_last:]:
+                        log_callback(line)
+                    task_key_last = len(entries)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.3)
+                if not _active_tasks.get(task.id):
+                    break
+
+        bridge_task = create_logged_task(
+            bridge_logs(),
+            description=f"db task log bridge {task.id}",
         )
 
-        full_output = (stdout or "") + "\n" + (stderr or "")
+        result = await sign_service.run_task_with_logs(
+            account.account_name,
+            task.name,
+            lock_already_held=True,
+            run_id=run_id,
+        )
+
+        success = bool(result.get("success"))
+        full_output = result.get("output") or ""
 
         # 写入日志文件（完整内容）
         with open(log_file, "w", encoding="utf-8") as fp:
@@ -216,10 +250,10 @@ async def _run_task_once_locked(
 
         # 更新数据库记录
         task_log.finished_at = utc_now_naive()
-        task_log.status = "success" if returncode == 0 else "failed"
-        if returncode != 0:
+        task_log.status = "success" if success else "failed"
+        if not success:
             task_log.output = (
-                stderr[-1000:] if stderr else "Failed with exit code " + str(returncode)
+                (result.get("error") or full_output or "Failed")[-1000:]
             )
         else:
             task_log.output = "Success"
@@ -236,6 +270,9 @@ async def _run_task_once_locked(
         task_log.output = msg[-1000:]
         db.commit()
     finally:
+        # 确保日志桥接协程始终被终止（成功/失败/异常路径统一清理）
+        if bridge_task is not None:
+            bridge_task.cancel()
         _active_tasks[task.id] = False
 
         # 延迟清理日志

@@ -158,6 +158,11 @@ NODE_ENV=development npm run build
 
 ### 4.2 Web 调度仍保留 CLI 子进程轨道
 
+> ✅ **已于本轮闭环（2026-08-30）**：`run_task_once` 统一走进程内
+> `SignTaskService.run_task_with_logs`（`lock_already_held=True` + 传 `run_id`），
+> `backend/cli/tasks.py::async_run_task_cli` 仅保留命令行兼容入口，Web 调度不再 spawn 子进程。
+> 详见 `doc/upstream-sync-decision-table.md` §5 与 `doc/fix-plan-2026-08-30.md` 第三轮登记。
+
 当前通过 `AccountLock` 已实现 DB task 与 SignTask 的账号级互斥，因此短期风险已得到控制。但 Web 调度仍然通过 `tg-signer` 子进程执行部分任务。
 
 长期建议：
@@ -170,6 +175,10 @@ NODE_ENV=development npm run build
 该项属于行为级架构重构，不阻塞当前发布候选版本。
 
 ### 4.3 生产环境仍应执行真实部署验证
+
+> 🔶 代码级验证已完成（Docker 干净构建/Compose 冒烟/多 worker 互斥测试见
+> `doc/deployment-verification.md`）；真实 Telegram/多账号/反向代理 WebSocket/
+> 重启恢复等仍需目标环境执行并回填清单。
 
 代码级测试和前端构建已经通过，但正式发布前仍应在目标环境完成：
 
