@@ -5,6 +5,7 @@ Clean sign-task routes with shared multi-account task support.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import (
@@ -20,9 +21,11 @@ from fastapi.responses import JSONResponse
 
 try:
     from pydantic import BaseModel, ConfigDict, Field, field_validator
+
     validator = None
 except ImportError:  # pragma: no cover - pydantic v1 compatibility
     from pydantic import BaseModel, Field, validator
+
     ConfigDict = None
     field_validator = None
 
@@ -35,6 +38,8 @@ from backend.services.sign_tasks import get_sign_task_service
 from backend.utils.names import validate_storage_name
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 def _model_dump(model: BaseModel) -> Dict[str, Any]:
@@ -60,11 +65,14 @@ class ChatConfig(BaseModel):
     delete_after: Optional[int] = Field(None, description="Delete delay seconds")
     action_interval: int = Field(1, description="Action interval seconds")
     message_thread_id: Optional[int] = Field(None, description="Thread ID")
-    source_account: Optional[str] = Field(None, description="Account used to look up this chat (for avatar)")
+    source_account: Optional[str] = Field(
+        None, description="Account used to look up this chat (for avatar)"
+    )
 
     if _PYDANTIC_V2 and ConfigDict is not None:
         model_config = ConfigDict(extra="allow")
     else:
+
         class Config:
             extra = "allow"
 
@@ -72,7 +80,9 @@ class ChatConfig(BaseModel):
 class SignTaskCreate(BaseModel):
     name: str = Field(..., description="Task name")
     account_name: str = Field("", description="Primary account name for compatibility")
-    account_names: List[str] = Field(default_factory=list, description="Associated accounts")
+    account_names: List[str] = Field(
+        default_factory=list, description="Associated accounts"
+    )
     sign_at: str = Field(..., description="Schedule cron")
     chats: List[ChatConfig] = Field(..., description="Chat configs")
     random_seconds: int = Field(0, description="Random delay seconds")
@@ -84,21 +94,23 @@ class SignTaskCreate(BaseModel):
     notify_on_failure: bool = Field(True, description="Failure notification switch")
 
     if field_validator is not None:
+
         @field_validator("name")
         @classmethod
         def name_must_be_valid_filename(cls, v: str) -> str:
             if not v or not v.strip():
                 raise ValueError("任务名称不能为空")
-            if '/' in v or '\\' in v:
-                raise ValueError('任务名称不能包含路径分隔符: / \\')
+            if "/" in v or "\\" in v:
+                raise ValueError("任务名称不能包含路径分隔符: / \\")
             return v.strip()
     else:
+
         @validator("name", allow_reuse=True)
         def name_must_be_valid_filename(cls, v: str) -> str:
             if not v or not v.strip():
                 raise ValueError("任务名称不能为空")
-            if '/' in v or '\\' in v:
-                raise ValueError('任务名称不能包含路径分隔符: / \\')
+            if "/" in v or "\\" in v:
+                raise ValueError("任务名称不能包含路径分隔符: / \\")
             return v.strip()
 
 
@@ -108,11 +120,15 @@ class SignTaskUpdate(BaseModel):
     chats: Optional[List[ChatConfig]] = Field(None, description="Chat configs")
     random_seconds: Optional[int] = Field(None, description="Random delay seconds")
     sign_interval: Optional[int] = Field(None, description="Action interval seconds")
-    daily_times: Optional[int] = Field(None, ge=1, le=5, description="每日签到次数 (1-5)")
+    daily_times: Optional[int] = Field(
+        None, ge=1, le=5, description="每日签到次数 (1-5)"
+    )
     execution_mode: Optional[str] = Field(None, description="fixed/range")
     range_start: Optional[str] = Field(None, description="Range start")
     range_end: Optional[str] = Field(None, description="Range end")
-    notify_on_failure: Optional[bool] = Field(None, description="Failure notification switch")
+    notify_on_failure: Optional[bool] = Field(
+        None, description="Failure notification switch"
+    )
 
 
 class LastRunInfo(BaseModel):
@@ -240,8 +256,9 @@ async def create_sign_task(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(e),
         ) from e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"创建任务失败: {str(e)}")
+    except Exception:
+        logger.exception("创建任务失败")
+        raise HTTPException(status_code=500, detail="创建任务失败")
 
 
 @router.get("/{task_name}", response_model=SignTaskOut)
@@ -278,7 +295,9 @@ async def update_sign_task(
 ):
     try:
         # Normalize: treat empty string and wildcard as None for lookup
-        effective_account = account_name if (account_name and account_name != "*") else None
+        effective_account = (
+            account_name if (account_name and account_name != "*") else None
+        )
         existing = get_sign_task_service().get_task(
             task_name,
             account_name=effective_account,
@@ -331,8 +350,9 @@ async def update_sign_task(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(e),
         ) from e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"更新任务失败: {str(e)}")
+    except Exception:
+        logger.exception("更新任务失败")
+        raise HTTPException(status_code=500, detail="更新任务失败")
 
 
 @router.delete("/{task_name}", status_code=status.HTTP_200_OK)
@@ -342,7 +362,9 @@ async def delete_sign_task(
     current_user=Depends(get_current_user),
 ):
     try:
-        success = get_sign_task_service().delete_task(task_name, account_name=account_name)
+        success = get_sign_task_service().delete_task(
+            task_name, account_name=account_name
+        )
         if not success:
             raise HTTPException(status_code=404, detail=f"任务 {task_name} 不存在")
 
@@ -381,10 +403,14 @@ async def run_sign_task(
             if not resolved_account or resolved_account == "*":
                 raise HTTPException(status_code=400, detail="无法确定执行账号")
         else:
-            task = get_sign_task_service().get_task(task_name, account_name=resolved_account)
+            task = get_sign_task_service().get_task(
+                task_name, account_name=resolved_account
+            )
             if not task:
                 raise HTTPException(status_code=404, detail=f"任务 {task_name} 不存在")
-        return await get_sign_task_service().run_task_with_logs(resolved_account, task_name)
+        return await get_sign_task_service().run_task_with_logs(
+            resolved_account, task_name
+        )
     except HTTPException:
         raise
     except ValueError as e:
@@ -417,7 +443,9 @@ async def start_sign_task_run(
             if not resolved_account or resolved_account == "*":
                 raise HTTPException(status_code=400, detail="无法确定执行账号")
         else:
-            task = get_sign_task_service().get_task(task_name, account_name=resolved_account)
+            task = get_sign_task_service().get_task(
+                task_name, account_name=resolved_account
+            )
             if not task:
                 raise HTTPException(status_code=404, detail=f"任务 {task_name} 不存在")
         return await get_sign_task_service().start_task_run(resolved_account, task_name)
@@ -452,7 +480,9 @@ def get_sign_task_run_status(
             if not resolved_account or resolved_account == "*":
                 raise HTTPException(status_code=400, detail="无法确定执行账号")
         else:
-            task = get_sign_task_service().get_task(task_name, account_name=resolved_account)
+            task = get_sign_task_service().get_task(
+                task_name, account_name=resolved_account
+            )
             if not task:
                 raise HTTPException(status_code=404, detail=f"任务 {task_name} 不存在")
         return get_sign_task_service().get_task_run_status(
@@ -476,7 +506,9 @@ def get_sign_task_logs(
     current_user=Depends(get_current_user),
 ):
     effective_account = account_name if (account_name and account_name != "*") else None
-    return get_sign_task_service().get_active_logs(task_name, account_name=effective_account)
+    return get_sign_task_service().get_active_logs(
+        task_name, account_name=effective_account
+    )
 
 
 @router.get("/{task_name}/history", response_model=List[TaskHistoryItem])
@@ -488,7 +520,9 @@ def get_sign_task_history(
 ):
     try:
         # Treat empty string and wildcard as None (aggregate mode)
-        effective_account = account_name if (account_name and account_name != "*") else None
+        effective_account = (
+            account_name if (account_name and account_name != "*") else None
+        )
         task = get_sign_task_service().get_task(
             task_name,
             account_name=effective_account,
@@ -535,8 +569,9 @@ async def get_account_chats(
                 content={"detail": detail, "code": "ACCOUNT_SESSION_INVALID"},
             )
         raise HTTPException(status_code=400, detail=detail)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取对话列表失败: {str(e)}")
+    except Exception:
+        logger.exception("获取对话列表失败")
+        raise HTTPException(status_code=500, detail="获取对话列表失败")
 
 
 @router.get("/chats/{account_name}/search", response_model=ChatSearchResponse)
@@ -557,8 +592,9 @@ def search_account_chats(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"搜索对话列表失败: {str(e)}")
+    except Exception:
+        logger.exception("搜索对话列表失败")
+        raise HTTPException(status_code=500, detail="搜索对话列表失败")
 
 
 @router.get("/chats/{account_name}/avatar/{chat_id}")
@@ -616,6 +652,7 @@ async def get_chat_avatar(
         if age < 604800:
             try:
                 import shutil
+
                 shutil.copy2(legacy_cache_file, cache_file)
             except Exception:
                 pass
@@ -662,19 +699,26 @@ async def sign_task_logs_ws(
     websocket: WebSocket,
     task_name: str,
     account_name: str | None = Query(None),
-    token: str = Query(...),
     db: Session = Depends(get_db),
 ):
+    # 先接受连接，再读取首帧认证（token 不进 URL，防止代理日志泄密）
+    await websocket.accept()
+
     try:
-        user = verify_token(token, db)
+        auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+    except Exception:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    try:
+        token = (auth_msg or {}).get("token") if isinstance(auth_msg, dict) else None
+        user = verify_token(token, db) if token else None
         if not user:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
     except Exception:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
-
-    await websocket.accept()
 
     # Resolve empty/wildcard account_name to None for broader matching
     effective_account = account_name if (account_name and account_name != "*") else None

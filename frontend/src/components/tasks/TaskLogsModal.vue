@@ -62,7 +62,8 @@ const connectWebSocket = () => {
   const accountName = getTaskAccountName(props.task) || ''
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const wsHost = window.location.host
-  const wsUrl = `${wsProtocol}//${wsHost}/api/sign-tasks/ws/${taskName}?token=${encodeURIComponent(token)}&account_name=${encodeURIComponent(accountName)}`
+  // token 不放入 URL（防止代理日志泄密），改为连接建立后首帧发送
+  const wsUrl = `${wsProtocol}//${wsHost}/api/sign-tasks/ws/${taskName}?account_name=${encodeURIComponent(accountName)}`
 
   realtimeLogs.value = []
   // Only show "running" state when user just clicked Run (runAccount provided)
@@ -80,7 +81,10 @@ const connectWebSocket = () => {
   }
 
   ws.onopen = () => {
-    // Connected successfully
+    // 首帧携带 token 完成认证
+    try {
+      ws?.send(JSON.stringify({ token }))
+    } catch {}
   }
   ws.onmessage = (event) => {
     try {

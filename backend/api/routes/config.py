@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -14,6 +15,8 @@ from backend.services.config import get_config_service
 from backend.utils.storage import is_writable_dir
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 def _clear_sign_task_cache() -> None:
@@ -75,10 +78,11 @@ def list_all_tasks(current_user: User = Depends(get_current_user)):
             monitor_tasks=monitor_tasks,
             total=len(sign_tasks) + len(monitor_tasks),
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to list tasks")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list tasks: {str(e)}",
+            detail="Failed to list tasks",
         )
 
 
@@ -106,10 +110,11 @@ def export_sign_task(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to export task")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to export task: {str(e)}",
+            detail="Failed to export task",
         )
 
 
@@ -155,10 +160,11 @@ async def import_sign_task(
         )
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to import task")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to import task: {str(e)}",
+            detail="Failed to import task",
         )
 
 
@@ -173,10 +179,11 @@ def export_all_configs(current_user: User = Depends(get_current_user)):
                 "Content-Disposition": 'attachment; filename="tg_signer_all_configs.json"'
             },
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to export all configs")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to export all configs: {str(e)}",
+            detail="Failed to export all configs",
         )
 
 
@@ -225,10 +232,11 @@ async def import_all_configs(
             errors=[str(item) for item in result.get("errors", [])],
             message=message,
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to import all configs")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to import all configs: {str(e)}",
+            detail="Failed to import all configs",
         )
 
 
@@ -258,10 +266,11 @@ async def delete_sign_task(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to delete task")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete task: {str(e)}",
+            detail="Failed to delete task",
         )
 
 
@@ -312,10 +321,11 @@ def get_ai_config(current_user: User = Depends(get_current_user)):
             model=config.get("model"),
             api_key_masked=masked,
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to read AI config")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to read AI config: {str(e)}",
+            detail="Failed to read AI config",
         )
 
 
@@ -332,10 +342,11 @@ def save_ai_config(
         return AIConfigSaveResponse(success=True, message="AI config saved")
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to save AI config")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to save AI config: {str(e)}",
+            detail="Failed to save AI config",
         )
 
 
@@ -344,8 +355,9 @@ async def test_ai_connection(current_user: User = Depends(get_current_user)):
     try:
         result = await get_config_service().test_ai_connection()
         return AITestResponse(**result)
-    except Exception as e:
-        return AITestResponse(success=False, message=f"AI test failed: {str(e)}")
+    except Exception:
+        logger.exception("AI connection test failed")
+        return AITestResponse(success=False, message="AI test failed")
 
 
 @router.delete("/ai", response_model=AIConfigSaveResponse)
@@ -353,10 +365,11 @@ def delete_ai_config(current_user: User = Depends(get_current_user)):
     try:
         get_config_service().delete_ai_config()
         return AIConfigSaveResponse(success=True, message="AI config deleted")
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to delete AI config")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete AI config: {str(e)}",
+            detail="Failed to delete AI config",
         )
 
 
@@ -393,10 +406,11 @@ def get_global_settings(current_user: User = Depends(get_current_user)):
     try:
         settings = get_config_service().get_global_settings()
         return GlobalSettingsResponse(**settings)
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to read global settings")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to read global settings: {str(e)}",
+            detail="Failed to read global settings",
         )
 
 
@@ -428,10 +442,11 @@ async def save_global_settings(
         return AIConfigSaveResponse(success=True, message="Global settings saved")
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to save global settings")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to save global settings: {str(e)}",
+            detail="Failed to save global settings",
         )
 
 
@@ -465,10 +480,11 @@ def get_telegram_config(current_user: User = Depends(get_current_user)):
             default_api_id=service.DEFAULT_TG_API_ID,
             default_api_hash=service.DEFAULT_TG_API_HASH,
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to read Telegram config")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to read Telegram config: {str(e)}",
+            detail="Failed to read Telegram config",
         )
 
 
@@ -495,10 +511,11 @@ def save_telegram_config(
         return TelegramConfigSaveResponse(success=True, message="Telegram config saved")
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to save Telegram config")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to save Telegram config: {str(e)}",
+            detail="Failed to save Telegram config",
         )
 
 
@@ -507,8 +524,9 @@ def reset_telegram_config(current_user: User = Depends(get_current_user)):
     try:
         get_config_service().reset_telegram_config()
         return TelegramConfigSaveResponse(success=True, message="Telegram config reset")
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to reset Telegram config")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to reset Telegram config: {str(e)}",
+            detail="Failed to reset Telegram config",
         )

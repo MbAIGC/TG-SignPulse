@@ -222,3 +222,134 @@ def test_get_log_output_truncates_large_file(client_with_user, monkeypatch, tmp_
     body = res.json()
     assert body["truncated"] is True
     assert len(body["output"]) <= 1024 + 2  # 允许丢弃半行后的轻微余量
+
+
+# ---------- 第二档安全加固回归（修复计划 5/6/7/8） ----------
+
+
+def test_weak_secret_key_rejected():
+    """修复 5：显式配置的弱 JWT 密钥（占位/过短）必须被拒绝。"""
+    from backend.core.config import get_default_secret_key
+
+    for weak in ("your_secret_key", "your_secret_key_here", "secret", "short"):
+        with pytest.raises(ValueError):
+            get_default_secret_key({"APP_SECRET_KEY": weak})
+
+    # 强密钥与自动生成不受影响
+    strong = "x" * 40
+    assert get_default_secret_key({"APP_SECRET_KEY": strong}) == strong
+
+
+def test_session_string_file_permissions_0o600(monkeypatch, tmp_path):
+    """修复 6：session_string 文件必须为 0o600，会话目录 0o700。"""
+    from backend.core.config import Settings
+    from backend.utils.tg_session import _write_session_string_file, save_session_string_file
+
+    session_dir = tmp_path / "sessions"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Settings, "resolve_session_dir", lambda self: session_dir)
+
+    # 目录权限 0o700
+    import os
+
+    os.chmod(session_dir, 0o700)
+    assert (session_dir.stat().st_mode & 0o777) == 0o700
+
+    path = session_dir / "acct.session_string"
+    save_session_string_file(session_dir, "acct", "SESSION_ABC")
+    assert path.exists()
+    assert (path.stat().st_mode & 0o777) == 0o600
+
+    # 内部写入辅助同样设 0o600
+    path2 = session_dir / "acct2.session_string"
+    _write_session_string_file(path2, "SESSION_DEF")
+    assert (path2.stat().st_mode & 0o777) == 0o600
+
+
+def test_ws_first_frame_auth_rejects_missing_token(client_with_user):
+    """修复 7：WebSocket 首帧认证——不发 token 首帧必须被拒（1008）。"""
+    client, headers, user, db = client_with_user
+
+    with client.websocket_connect("/api/tasks/ws/1") as ws:
+        # 发送非 JSON / 无 token 内容
+        ws.send_text("hello")
+        res = ws.receive()
+        assert res.get("code") == 1008 or res.get("type") == "websocket.close"
+
+
+def test_ws_first_frame_auth_rejects_invalid_token(client_with_user):
+    """修复 7：WebSocket 首帧认证——无效 token 必须被拒（1008）。"""
+    client, headers, user, db = client_with_user
+
+    with client.websocket_connect("/api/tasks/ws/1") as ws:
+        ws.send_json({"token": "invalid-token"})
+        res = ws.receive()
+        assert res.get("code") == 1008 or res.get("type") == "websocket.close"
+
+
+def test_ws_first_frame_auth_accepts_valid_token(client_with_user):
+    """修复 7：WebSocket 首帧认证——有效 token 首帧被接受并收到正常数据。"""
+    client, headers, user, db = client_with_user
+    token = headers["Authorization"].replace("Bearer ", "")
+
+    with client.websocket_connect("/api/tasks/ws/1") as ws:
+        ws.send_json({"token": token})
+        # 无任务运行且无日志时，服务端应立即推送 done
+        msg = ws.receive_json()
+        assert msg.get("type") == "done"
+
+
+def test_config_error_responses_are_stable(client_with_user, monkeypatch, tmp_path):
+    """修复 8：配置路由的未知异常响应必须稳定，不泄露 str(e)。"""
+    from backend.core.config import Settings
+    from backend.services import config as config_service_mod
+
+    client, headers, user, db = client_with_user
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Settings, "resolve_logs_dir", lambda self: logs_dir)
+
+    # 让 get_config_service().list_sign_tasks 抛内部异常
+    import backend.services.config as cfg
+
+    svc = cfg.get_config_service()
+
+    def boom():
+        raise RuntimeError("INTERNAL_PATH_SECRET_DETAILS")
+
+    monkeypatch.setattr(svc, "list_sign_tasks", boom)
+
+    res = client.get("/api/config/tasks", headers=headers)
+    assert res.status_code == 500
+    detail = res.json()["detail"]
+    assert "INTERNAL_PATH_SECRET_DETAILS" not in detail
+    assert "Failed to list tasks" in detail
+
+
+def test_get_log_output_error_response_stable(client_with_user, monkeypatch, tmp_path):
+    """修复 8：get_log_output 内部异常响应稳定，不泄露 str(e)。"""
+    from backend.core.config import Settings
+
+    client, headers, user, db = client_with_user
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Settings, "resolve_logs_dir", lambda self: logs_dir)
+
+    # 缺失文件：位于日志目录内 → 200 回退到 log.output（不抛出 500/泄露）
+    log = TaskLog(
+        task_id=1,
+        status="success",
+        log_path=str(logs_dir / "missing.log"),
+        output="fallback output",
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+
+    res = client.get(f"/api/tasks/logs/{log.id}/output", headers=headers)
+    assert res.status_code == 200
+    body = res.json()
+    assert "Failed to read log file" not in body["output"]
+    assert body["output"] == "fallback output"

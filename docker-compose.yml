@@ -9,7 +9,10 @@ services:
       - ./data:/data
     environment:
       - TZ=${TZ:-Asia/Shanghai}
-      - APP_SECRET_KEY=${APP_SECRET_KEY:-your_secret_key}
+      # JWT 密钥：请务必设置高强度随机值（如 `openssl rand -hex 32`）。
+      # 不设置时应用会自动生成并持久化到 <data>/.app_secret_key。
+      # 注意：不得使用 your_secret_key 等弱值，启动会被拒绝。
+      - APP_SECRET_KEY=${APP_SECRET_KEY:-}
       # 可选：首次启动时预设管理员密码（不设置则密码写入 /data/.admin_bootstrap_password）
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
     healthcheck:

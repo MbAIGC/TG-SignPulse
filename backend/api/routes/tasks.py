@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 
@@ -8,7 +9,6 @@ from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
-    Query,
     WebSocket,
     WebSocketDisconnect,
     status,
@@ -26,6 +26,8 @@ from backend.schemas.task_log import TaskLogOut
 from backend.services import tasks as task_service
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 @router.get("", response_model=list[TaskOut])
@@ -136,23 +138,30 @@ def list_logs(
 async def task_logs_ws(
     websocket: WebSocket,
     task_id: int,
-    token: str = Query(...),
     db: Session = Depends(get_db),
 ):
     """
     WebSocket 实时推送数据库任务日志
+    认证走首帧消息 {"token": "..."}，避免 token 暴露在 URL 查询参数
     """
-    # 验证 Token
+    # 先接受连接，再读取首帧认证（token 不进 URL，防止代理日志泄密）
+    await websocket.accept()
+
     try:
-        user = verify_token(token, db)
+        auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+    except Exception:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    try:
+        token = (auth_msg or {}).get("token") if isinstance(auth_msg, dict) else None
+        user = verify_token(token, db) if token else None
         if not user:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
     except Exception:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
-
-    await websocket.accept()
 
     last_idx = 0
     try:
@@ -182,8 +191,8 @@ async def task_logs_ws(
             await asyncio.sleep(0.5)
     except WebSocketDisconnect:
         pass
-    except Exception as e:
-        print(f"WS Error for Task {task_id}: {e}")
+    except Exception:
+        logger.exception("WS Error for Task %s", task_id)
     finally:
         try:
             await websocket.close()
@@ -237,7 +246,6 @@ def get_log_output(
                 f.seek(0)
             content = f.read()
         return {"output": content, "truncated": truncated}
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to read log file: {str(e)}"
-        )
+    except Exception:
+        logger.exception("Failed to read log file %s", target_path)
+        raise HTTPException(status_code=500, detail="Failed to read log file")

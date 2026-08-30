@@ -68,10 +68,42 @@ def _read_path_env(env: Mapping[str, str], *names: str) -> Path | None:
     return Path(raw).expanduser()
 
 
+# 已知的弱 JWT 密钥（占位/示例值），显式配置时直接拒绝启动
+_WEAK_SECRET_KEYS = {
+    "your_secret_key",
+    "your_secret_key_here",
+    "secret",
+    "changeme",
+    "change_me",
+    "password",
+    "default",
+    "123456",
+    "12345678",
+}
+
+# 显式配置的密钥最小长度；自动生成值不受此限制
+_SECRET_KEY_MIN_LENGTH = 32
+
+
+def _is_weak_secret_key(value: str) -> bool:
+    stripped = value.strip()
+    lowered = stripped.lower()
+    if lowered in _WEAK_SECRET_KEYS:
+        return True
+    if len(stripped) < _SECRET_KEY_MIN_LENGTH:
+        return True
+    return False
+
+
 def get_default_secret_key(env: Mapping[str, str] | None = None) -> str:
     env_map = env or os.environ
     env_secret = _read_env(env_map, "APP_SECRET_KEY")
     if env_secret:
+        if _is_weak_secret_key(env_secret):
+            raise ValueError(
+                "APP_SECRET_KEY 过弱或被列入已知弱值：请设置至少 32 字符的高强度随机密钥"
+                "（例如 `openssl rand -hex 32` 的输出），否则拒绝启动。"
+            )
         return env_secret
 
     data_dir = _read_path_env(env_map, "APP_DATA_DIR")
@@ -119,7 +151,9 @@ class Settings(BaseModel):
     def from_environment(cls) -> Settings:
         env = _merged_env()
         return cls(
-            app_name=_read_env(env, "APP_APP_NAME", "APP_NAME", default="tg-signer-panel"),
+            app_name=_read_env(
+                env, "APP_APP_NAME", "APP_NAME", default="tg-signer-panel"
+            ),
             host=_read_env(env, "APP_HOST", default="127.0.0.1"),
             port=_read_int_env(env, "APP_PORT", "PORT", default=8080),
             cors_allow_origins_raw=_read_env(

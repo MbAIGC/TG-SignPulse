@@ -255,10 +255,11 @@ async def start_account_login(
 
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception as e:
+    except Exception:
+        logger.exception("发送验证码失败")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"发送验证码失败: {str(e)}",
+            detail="发送验证码失败",
         )
 
 
@@ -306,10 +307,11 @@ async def verify_account_login(
 
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception as e:
+    except Exception:
+        logger.exception("登录验证失败")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"登录验证失败: {str(e)}",
+            detail="登录验证失败",
         )
 
 
@@ -362,10 +364,11 @@ async def start_qr_login(
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception as e:
+    except Exception:
+        logger.exception("开始扫码登录失败")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"开始扫码登录失败: {str(e)}",
+            detail="开始扫码登录失败",
         )
 
 
@@ -388,10 +391,11 @@ async def get_qr_login_status(
             first_name=result.get("first_name"),
             username=result.get("username"),
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("获取扫码状态失败")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"获取扫码状态失败: {str(e)}",
+            detail="获取扫码状态失败",
         )
 
 
@@ -430,10 +434,11 @@ async def submit_qr_login_password(
     except ValueError as e:
         logger.warning("qr_password_failed login_id=%s error=%s", request.login_id, e)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception as e:
+    except Exception:
+        logger.exception("提交 2FA 密码失败")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"提交 2FA 密码失败: {str(e)}",
+            detail="提交 2FA 密码失败",
         )
 
 
@@ -448,10 +453,11 @@ async def cancel_qr_login(
             success=success,
             message="已取消" if success else "登录已失效",
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("取消扫码登录失败")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"取消扫码登录失败: {str(e)}",
+            detail="取消扫码登录失败",
         )
 
 
@@ -469,10 +475,11 @@ def list_accounts(current_user: User = Depends(get_current_user)):
             accounts=[AccountInfo(**acc) for acc in accounts], total=len(accounts)
         )
 
-    except Exception as e:
+    except Exception:
+        logger.exception("获取账号列表失败")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"获取账号列表失败: {str(e)}",
+            detail="获取账号列表失败",
         )
 
 
@@ -524,10 +531,11 @@ async def check_accounts_status(
                 await asyncio.sleep(0.15)
 
         return AccountStatusCheckResponse(results=results)
-    except Exception as e:
+    except Exception:
+        logger.exception("账号状态检测失败")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"账号状态检测失败: {str(e)}",
+            detail="账号状态检测失败",
         )
 
 
@@ -590,10 +598,11 @@ async def delete_account(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
+        logger.exception("删除账号失败")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"删除账号失败: {str(e)}",
+            detail="删除账号失败",
         )
 
 
@@ -648,7 +657,9 @@ async def get_account_avatar(
 
     # 尝试下载头像
     try:
-        avatar_bytes = await get_telegram_service().download_account_avatar(account_name)
+        avatar_bytes = await get_telegram_service().download_account_avatar(
+            account_name
+        )
         if avatar_bytes:
             cache_file.write_bytes(avatar_bytes)
             no_avatar_marker.unlink(missing_ok=True)
@@ -675,7 +686,9 @@ async def update_account(
     try:
         account_name = validate_storage_name(account_name, field_name="account_name")
         if request.new_account_name:
-            validate_storage_name(request.new_account_name, field_name="new_account_name")
+            validate_storage_name(
+                request.new_account_name, field_name="new_account_name"
+            )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -685,7 +698,8 @@ async def update_account(
         (
             acc
             for acc in accounts
-            if str(acc.get("name") or "").strip().lower() == account_name.strip().lower()
+            if str(acc.get("name") or "").strip().lower()
+            == account_name.strip().lower()
         ),
         None,
     )
@@ -701,7 +715,8 @@ async def update_account(
         actual_account_name = str(current_account.get("name") or account_name).strip()
         target_account_name = (
             request.new_account_name.strip()
-            if isinstance(request.new_account_name, str) and request.new_account_name.strip()
+            if isinstance(request.new_account_name, str)
+            and request.new_account_name.strip()
             else actual_account_name
         )
         renamed = target_account_name != actual_account_name
@@ -752,11 +767,13 @@ async def update_account(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("更新账号信息失败")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"更新账号信息失败: {str(e)}",
+            detail="更新账号信息失败",
         )
+
 
 class AccountLogItem(BaseModel):
     """账号日志项"""
@@ -907,7 +924,9 @@ def export_account_logs(
     for item in history:
         time_str = item.get("time", "").replace("T", " ")[:19]
         state_text = "SUCCESS" if item.get("success") else "FAILED"
-        content += f"[{time_str}] Task: {item.get('task_name')} | Status: {state_text}\n"
+        content += (
+            f"[{time_str}] Task: {item.get('task_name')} | Status: {state_text}\n"
+        )
         if item.get("message"):
             content += f"Message: {item.get('message')}\n"
         content += "-" * 20 + "\n"
@@ -916,7 +935,5 @@ def export_account_logs(
     return Response(
         content=content,
         media_type="text/plain; charset=utf-8",
-        headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}_logs.txt"'
-        },
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}_logs.txt"'},
     )

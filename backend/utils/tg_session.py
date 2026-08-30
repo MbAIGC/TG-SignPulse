@@ -50,6 +50,7 @@ def _resolve_concurrency_limit() -> int:
             pass
     try:
         from backend.services.config import get_config_service
+
         settings = get_config_service().get_global_settings()
         val = settings.get("tg_global_concurrency")
         if val is not None:
@@ -75,6 +76,11 @@ def _account_store_path() -> Path:
     settings = get_settings()
     session_dir = settings.resolve_session_dir()
     session_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        # 会话目录包含敏感凭证，禁止组/其他用户访问
+        os.chmod(session_dir, 0o700)
+    except OSError:
+        pass
     return session_dir / "accounts.json"
 
 
@@ -276,6 +282,15 @@ def set_account_status(
         _save_account_store_unlocked(data)
 
 
+def _write_session_string_file(path: Path, content: str) -> None:
+    """写入 session_string 文件并强制 0o600（会话凭证，禁止组/其他用户可读）。"""
+    path.write_text(content, encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 def session_string_file_path(session_dir: Path, account_name: str) -> Path:
     return session_dir / f"{account_name}.session_string"
 
@@ -308,7 +323,9 @@ def _is_legacy_broken_session_string(content: str) -> bool:
     return len(text) > 20 and len(text) % 4 == 1
 
 
-def _export_session_string_from_file(session_dir: Path, account_name: str) -> str | None:
+def _export_session_string_from_file(
+    session_dir: Path, account_name: str
+) -> str | None:
     """Extract session string from .session SQLite file and cache it."""
     import base64
     import sqlite3
@@ -361,7 +378,7 @@ def _export_session_string_from_file(session_dir: Path, account_name: str) -> st
         # Cache it to .session_string file for future use
         try:
             cache_path = session_string_file_path(session_dir, account_name)
-            cache_path.write_text(session_string, encoding="utf-8")
+            _write_session_string_file(cache_path, session_string)
         except Exception:
             pass
 
@@ -374,7 +391,7 @@ def save_session_string_file(
     session_dir: Path, account_name: str, session_string: str
 ) -> None:
     path = session_string_file_path(session_dir, account_name)
-    path.write_text(session_string.strip(), encoding="utf-8")
+    _write_session_string_file(path, session_string.strip())
 
 
 def delete_session_string_file(session_dir: Path, account_name: str) -> None:

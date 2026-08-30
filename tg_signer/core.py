@@ -685,8 +685,12 @@ class Client(SafeGetForumTopics, BaseClient):
         return self.workdir / (self.name + ".session_string")
 
     async def save_session_string(self):
-        with open(self.session_string_file, "w") as fp:
-            fp.write(await self.export_session_string())
+        atomic_write_text(self.session_string_file, await self.export_session_string())
+        try:
+            # 会话凭证文件仅限本人可读写
+            os.chmod(self.session_string_file, 0o600)
+        except OSError:
+            pass
 
     def load_session_string(self):
         logger.info("Loading session_string from local file.")
