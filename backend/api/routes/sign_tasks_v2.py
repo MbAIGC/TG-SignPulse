@@ -29,13 +29,14 @@ except ImportError:  # pragma: no cover - pydantic v1 compatibility
     ConfigDict = None
     field_validator = None
 
-_PYDANTIC_V2 = hasattr(BaseModel, "model_validate")
 from sqlalchemy.orm import Session
 
 from backend.core.auth import get_current_user, verify_token
 from backend.core.database import get_db
 from backend.services.sign_tasks import get_sign_task_service
 from backend.utils.names import validate_storage_name
+
+_PYDANTIC_V2 = hasattr(BaseModel, "model_validate")
 
 router = APIRouter()
 

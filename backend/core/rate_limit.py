@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import math
 import time
 from collections import deque
@@ -93,9 +94,6 @@ class InMemoryRateLimiter:
                 detail=detail,
                 headers={"Retry-After": str(retry_after)},
             )
-
-
-import ipaddress
 
 
 def _is_valid_ip(val: str) -> bool:

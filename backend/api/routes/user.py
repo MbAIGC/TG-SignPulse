@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import time
 from dataclasses import dataclass
+from threading import Lock
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -34,7 +35,6 @@ _FALLBACK_PNG = (
     b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc`\x00\x01"
     b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
 )
-from threading import Lock
 
 _PENDING_TOTP_TTL_SECONDS = 10 * 60
 _pending_totp_lock = Lock()

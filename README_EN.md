@@ -96,6 +96,17 @@ services:
 docker compose up -d
 ```
 
+## Single-User Model
+
+- This project is a **single-user management panel**: there is exactly one
+  login account (`admin`), and all Telegram accounts, tasks, and check-in
+  records belong to that single user. There is no multi-tenant / multi-user
+  isolation.
+- There is intentionally no `owner_id` column or per-user permission matrix;
+  do not deploy this project as a multi-user SaaS panel.
+- If multiple people need to share it, enforce access control at the front
+  gateway layer (e.g. reverse proxy with Basic Auth / OIDC) on your own.
+
 ## Data Directory & Permissions
 
 - Default data directory: `/data` (sessions, signs, database, and logs)

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from backend.core.config import get_settings
@@ -66,8 +67,6 @@ def update_global_semaphore(new_limit: int) -> None:
     new_limit = max(new_limit, 1)
     _GLOBAL_SEMAPHORE = asyncio.Semaphore(new_limit)
 
-
-from threading import Lock
 
 _ACCOUNT_STORE_LOCK = Lock()
 

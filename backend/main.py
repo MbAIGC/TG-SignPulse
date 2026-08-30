@@ -28,23 +28,26 @@ def _patched_sqlite3_connect(*args, **kwargs):
 
 sqlite3.connect = _patched_sqlite3_connect
 
-from backend.api import router as api_router
-from backend.core.config import get_settings
-from backend.core.database import (
+# isort: off
+# 以下导入必须在 sqlite monkeypatch 之后执行
+from backend.api import router as api_router  # noqa: E402
+from backend.core.config import get_settings  # noqa: E402
+from backend.core.database import (  # noqa: E402
     Base,
     get_engine,
     get_session_local,
     init_engine,
 )
-from backend.scheduler import (
+from backend.scheduler import (  # noqa: E402
     init_scheduler,
     shutdown_scheduler,
     sync_jobs,
 )
-from backend.services.users import ensure_admin
-from backend.utils.paths import ensure_data_dirs
-from tg_signer import __version__ as tg_signer_version
-from tg_signer.async_utils import create_logged_task
+from backend.services.users import ensure_admin  # noqa: E402
+from backend.utils.paths import ensure_data_dirs  # noqa: E402
+from tg_signer import __version__ as tg_signer_version  # noqa: E402
+from tg_signer.async_utils import create_logged_task  # noqa: E402
+# isort: on
 
 
 # Silence /health check logs
