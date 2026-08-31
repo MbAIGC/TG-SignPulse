@@ -1,12 +1,16 @@
-# TG-SignPulse
+# TSPS - TG-SignPulse-S
 
-> Telegram 多账号自动签到、消息动作编排与关键词监听面板。
+- 基于上游项目：[akasls/TG-SignPulse](https://github.com/akasls/TG-SignPulse) 2026-05前版本的部分问题修复版。
 
 [English README](README_EN.md) · [项目笔记](PROJECT_NOTES.md) · [健康检查](#健康检查) · [更新日志](#更新日志)
 
+> Telegram 多账号自动签到、消息动作编排与关键词监听面板。
+
+本项目是在，上游项目：[akasls/TG-SignPulse](https://github.com/akasls/TG-SignPulse)归档停更期间，自改使用。现[akasls/TG-SignPulse](https://github.com/akasls/TG-SignPulse)已恢复更新，推荐大家访问使用。
+
 TG-SignPulse 是一个 Telegram 自动化管理面板。你可以在网页里管理多个账号，配置自动签到任务，并让任务按固定规则每天自动执行。
 
-> ✨ 本仓库由 **Codex + Deepseek** 协助持续优化维护。
+> ✨ 本仓库由 **Codex + Deepseek及DeepSeek Harness + deepseek v4 flash + GPT 5.6** 协助持续优化维护。
 
 ## 这个项目是做什么的？
 
