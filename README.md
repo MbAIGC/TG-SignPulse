@@ -6,9 +6,9 @@
 
 > Telegram 多账号自动签到、消息动作编排与关键词监听面板。
 
-本项目是在，上游项目：[akasls/TG-SignPulse](https://github.com/akasls/TG-SignPulse)归档停更期间，自改使用。现[akasls/TG-SignPulse](https://github.com/akasls/TG-SignPulse)已恢复更新，推荐大家访问使用。
+- 本项目是在上游：[akasls/TG-SignPulse](https://github.com/akasls/TG-SignPulse)归档期间，自改使用。现[akasls/TG-SignPulse](https://github.com/akasls/TG-SignPulse)已恢复，推荐继续使用。
 
-TG-SignPulse 是一个 Telegram 自动化管理面板。你可以在网页里管理多个账号，配置自动签到任务，并让任务按固定规则每天自动执行。
+- TG-SignPulse 是一个 Telegram 自动化管理面板。你可以在网页里管理多个账号，配置自动签到任务，并让任务按固定规则每天自动执行。
 
 > ✨ 本仓库由 **Codex + Deepseek及DeepSeek Harness + deepseek v4 flash + GPT 5.6** 协助持续优化维护。
 
@@ -23,6 +23,9 @@ TG-SignPulse 是一个 Telegram 自动化管理面板。你可以在网页里管
 - 适合 VPS 长期运行
 
 ## 项目亮点
+
+-- **每日签到次数**：任务可设置每天执行 1-5 次；固定时间按天均分到不同时刻，range 时间范围按窗口分段随机执行
+-- **同步上游 tg-signer 0.9.0**（amchii 分支，库整体跟进；
 
 - **多账号管理**：手机号 / 二维码两种方式登录，账号支持独立代理
 - **8 种动作类型**：发送文本、发送骰子、点击按钮、AI 识图后点按钮、AI 识图后发文本、AI 计算后发文本、AI 计算后点按钮、关键词监听通知
