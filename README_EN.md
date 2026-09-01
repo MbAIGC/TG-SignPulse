@@ -187,6 +187,22 @@ tests/        unit tests
 
 ## Changelog
 
+### 2026-09-01
+
+- **Synced upstream tg-signer 0.9.1** (selective import): fixes a Kurigram
+  `ValueError` when parsing animated chat photos that contain emoji markup but
+  no usable video size; keeps TG-SignPulse's `SafeGetForumTopics`, Session,
+  task-runner, and panel compatibility layers
+- **Task-run reliability**: fixes account-status lock re-entry that could leave
+  a task at “checking account status”; adds execution-stage logs, an initial
+  WebSocket status snapshot, and safer cancellation/recovery state handling
+- **Container and privacy**: production image explicitly installs `tgcrypto`;
+  Uvicorn access logs and login audit records redact client IPs; forwarded
+  headers require explicit `APP_TRUST_PROXY_HEADERS=1` opt-in
+- **Deployment maintenance**: removes unused `docker/GHCR.Dockerfile`; the
+  root `Dockerfile` is the single production image entry point; 243 backend
+  tests and the frontend production build passed
+
 ### 2026-08-30
 
 - **Synced upstream tg-signer 0.9.0** (amchii branch; TG-SignPulse is the Web
