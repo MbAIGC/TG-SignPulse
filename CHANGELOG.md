@@ -2,7 +2,11 @@
 
 ## 版本变动日志
 
-### 0.9.0
+### 0.9.1
++- 选择性同步上游 Kurigram 动态聊天头像解析补丁：当 Telegram 返回的动画头像仅包含 emoji markup、没有可用视频尺寸时安全跳过，避免解析时触发 `ValueError`
++- 保留 TG-SignPulse 的 `SafeGetForumTopics`、Session、任务运行和面板兼容层
++
++### 0.9.0
 - 新增 `list-folders` 和 `--from-folder`，支持从 Telegram 普通对话 Folder 加载手动添加的对话
 - 兼容 Kurigram 同步与异步论坛话题解析接口
 - 修复连续动作处理中已消费消息占位导致 `wait_for` 崩溃的问题

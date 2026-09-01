@@ -92,6 +92,18 @@
 - 0.9.0 `trim_memory` 未补回 CLI（库里保留）
 - `frontend/` 未改动（面板仅通过 backend API 交互，API 签名未变）
 
+## 5.1 后续选择性同步：tg-signer 0.9.1
+
+- 上游 `0.9.1` 的唯一运行时修复为 Kurigram 动态聊天头像解析保护；
+- 已选择性移植 `AnimatedChatPhoto._parse` 补丁和回归测试，保留本项目的
+  `SafeGetForumTopics` 及面板执行链路定制；
+- 当 `video_sizes` 仅包含 emoji markup 而没有可用 `VideoSize` 时，补丁返回
+  `None`，避免 Kurigram 内部对空列表调用 `max()` 导致 `ValueError`；
+- 本项目版本更新为 `0.9.1`。
+- 验证：新增补丁测试与核心库测试 56 项通过；完整后端测试 243 项通过；
+  Ruff lint 通过；前端生产构建通过。全仓格式检查存在 21 个既有历史文件差异，
+  本次触及文件均已格式化，未进行无关格式化提交。
+
 ## 6. 验证
 
 - `pytest tests`（`-o addopts=...` 覆盖 `-x`）：**166 passed**
