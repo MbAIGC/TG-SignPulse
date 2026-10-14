@@ -621,10 +621,18 @@ class Client(SafeGetForumTopics, BaseClient):
                                 raise e
 
                         # Enable WAL mode after start (redundant with patch but safe)
-                        if hasattr(self, "storage") and hasattr(self.storage, "conn"):
+                        # 注意：新版 kurigram 的 SQLiteStorage.conn 在未 open() 时会抛
+                        # RuntimeError，hasattr 只吞 AttributeError，必须显式兜住。
+                        try:
+                            storage_conn = getattr(
+                                getattr(self, "storage", None), "conn", None
+                            )
+                        except Exception:
+                            storage_conn = None
+                        if storage_conn is not None:
                             try:
-                                self.storage.conn.execute("PRAGMA journal_mode=WAL")
-                                self.storage.conn.execute("PRAGMA busy_timeout=30000")
+                                storage_conn.execute("PRAGMA journal_mode=WAL")
+                                storage_conn.execute("PRAGMA busy_timeout=30000")
                             except Exception as e:
                                 logger.error(f"Failed to enable WAL mode: {e}")
 

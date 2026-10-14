@@ -287,6 +287,52 @@ async def test_client_context_manager_reference_counting_and_start_stop(
 
 
 @pytest.mark.asyncio
+async def test_client_enter_tolerates_storage_conn_raising(monkeypatch, tmp_path):
+    """回归：新版 kurigram 的 storage.conn 在未 open() 时会抛 RuntimeError。
+
+    原先用 hasattr(self.storage, "conn") 探测，hasattr 只吞 AttributeError，
+    导致进入上下文时直接崩溃（CI 上表现为 14 个用例失败）。
+    """
+    import tg_signer.core as core
+
+    async def fake_connect(self):
+        self.is_connected = True
+        return True
+
+    async def fake_get_me(self):
+        return SimpleNamespace(id=1, username="fake_user")
+
+    async def fake_invoke(self, *_args, **_kwargs):
+        return None
+
+    async def fake_initialize(self):
+        self.is_initialized = True
+
+    async def fake_stop(self):
+        self.is_connected = False
+
+    monkeypatch.setattr(core.Client, "connect", fake_connect)
+    monkeypatch.setattr(core.Client, "get_me", fake_get_me)
+    monkeypatch.setattr(core.Client, "invoke", fake_invoke)
+    monkeypatch.setattr(core.Client, "initialize", fake_initialize)
+    monkeypatch.setattr(core.Client, "stop", fake_stop)
+
+    client = get_client(name="acct_storage_guard", workdir=tmp_path)
+
+    class _RaisingStorage:
+        @property
+        def conn(self):
+            raise RuntimeError("`SQLiteStorage.conn` accessed before `open()`")
+
+    client.storage = _RaisingStorage()
+
+    async with client as entered:
+        assert entered is client
+
+    assert not client.is_connected
+
+
+@pytest.mark.asyncio
 async def test_client_context_manager_raises_connection_error_during_start(
     monkeypatch, tmp_path
 ):

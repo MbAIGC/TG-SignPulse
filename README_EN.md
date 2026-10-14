@@ -204,7 +204,8 @@ item-by-item comparison is in
 - **Account health check**: automatic daily 09:00 inspection with deduplicated notifications
 - **Container and security**: runs as the data-volume owner with reduced privileges, supports a read-only root filesystem and capability dropping; secret key uses locked atomic writes; removed the 2FA-bypassing `/api/user/totp/reset`
 - **Panel**: 30-day status bars, invalid-account banner and badges, mobile bottom navigation, cron scheduling input, request timeouts, unified toast/confirm dialogs, update check
-- Verified with 313 backend tests, ruff clean, and a passing frontend build (incl. type check)
+- **Newer kurigram compatibility**: fixed a crash when entering the client context caused by `SQLiteStorage.conn` raising before `open()` (the old probe used `hasattr`, which only swallows `AttributeError`)
+- Verified with 314 backend tests, ruff clean, and a passing frontend build (incl. type check)
 
 ### 2026-09-01
 
