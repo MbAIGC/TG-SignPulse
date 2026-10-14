@@ -15,6 +15,7 @@ import time
 import traceback
 import uuid
 from contextlib import nullcontext
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -46,6 +47,15 @@ settings = get_settings()
 
 _service_logger = logging.getLogger("backend.sign_tasks")
 
+# 当前协程正在执行的签到运行 (account_name, task_name, run_id)。
+# asyncio 每个 Task 持有独立上下文，因此并发任务各自看到自己的身份。
+_current_task_run: ContextVar[tuple[str, str, str] | None] = ContextVar(
+    "sign_task_run", default=None
+)
+
+# 日志前缀由 BaseUserWorker.log() 生成，用于给无身份信息的记录兜底归属
+_TASK_LOG_PREFIX_RE = re.compile(r"账户「(?P<account>.*?)」- 任务「(?P<task>.*?)」:")
+
 
 def _safe_print(*args, sep: str = " ", end: str = "\n") -> None:
     text = sep.join(str(arg) for arg in args) + end
@@ -55,14 +65,66 @@ def _safe_print(*args, sep: str = " ", end: str = "\n") -> None:
 print = _safe_print
 
 
+class _AccountTaskLogFilter(logging.Filter):
+    """只放行属于本次运行的日志记录，避免并发运行互相串台。
+
+    判定顺序：
+    1. 记录自带身份（BackendUserSigner 注入）时，完全按身份比对；
+    2. 否则用日志前缀 ``账户「X」- 任务「Y」:`` 比对账号与任务；
+    3. 无前缀的网络诊断日志只能依赖当前运行的 ContextVar。
+    """
+
+    def __init__(self, account_name: str, task_name: str, run_id: str) -> None:
+        super().__init__()
+        self._account = account_name
+        self._task = task_name
+        self._run_id = run_id
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record_run = getattr(record, "_sign_task_run", None)
+        if record_run is not None:
+            if record_run[0] != self._account or record_run[1] != self._task:
+                return False
+            # 同一任务上一轮运行的迟到回调也不能混入本次日志
+            return not self._run_id or record_run[2] == self._run_id
+
+        match = _TASK_LOG_PREFIX_RE.search(record.getMessage())
+        if match:
+            if (
+                match.group("account") != self._account
+                or match.group("task") != self._task
+            ):
+                return False
+            current = _current_task_run.get()
+            if current is not None and current[2] != self._run_id:
+                return False
+            return True
+
+        return _current_task_run.get() == (self._account, self._task, self._run_id)
+
+
 class TaskLogHandler(logging.Handler):
     """
     自定义日志处理器，将日志实时写入到内存列表中
     """
 
-    def __init__(self, log_list: List[str]):
+    def __init__(
+        self,
+        log_list: List[str],
+        trimmed: Optional[Dict[tuple[str, str], int]] = None,
+        trim_key: Optional[tuple[str, str]] = None,
+        account_name: Optional[str] = None,
+        task_name: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ):
         super().__init__()
         self.log_list = log_list
+        # 记录被截掉的行数：缓冲区截断后 len() 不再变化，实时推送必须靠
+        # “已截断行数 + 当前长度”这个单调递增的序号判断是否有新日志。
+        self._trimmed = trimmed
+        self._trim_key = trim_key
+        if account_name is not None and task_name is not None:
+            self.addFilter(_AccountTaskLogFilter(account_name, task_name, run_id or ""))
 
     def emit(self, record):
         try:
@@ -71,6 +133,10 @@ class TaskLogHandler(logging.Handler):
             # 保持日志长度，避免内存占用过大
             if len(self.log_list) > 1000:
                 self.log_list.pop(0)
+                if self._trimmed is not None and self._trim_key is not None:
+                    self._trimmed[self._trim_key] = (
+                        self._trimmed.get(self._trim_key, 0) + 1
+                    )
         except Exception:
             self.handleError(record)
 
@@ -79,6 +145,20 @@ class BackendUserSigner(UserSigner):
     """
     后端专用的 UserSigner，适配后端目录结构并禁止交互式输入
     """
+
+    def __init__(self, *args, task_run_id: str = "", **kwargs):
+        super().__init__(*args, **kwargs)
+        self._task_run_id = task_run_id
+
+    def log(self, msg, level: str = "INFO", **kwargs):
+        # 给每条记录带上运行身份，日志过滤器据此精确归属，不依赖文案前缀
+        extra = dict(kwargs.pop("extra", None) or {})
+        extra["_sign_task_run"] = (
+            self._account,
+            self.task_name,
+            self._task_run_id,
+        )
+        super().log(msg, level=level, extra=extra, **kwargs)
 
     @property
     def task_dir(self):
@@ -143,6 +223,8 @@ class SignTaskService:
         self._active_logs: Dict[
             tuple[str, str], List[str]
         ] = {}  # (account, task) -> logs
+        # (account, task) -> 被截断掉的历史行数，用于计算单调递增的日志序号
+        self._active_log_trimmed: Dict[tuple[str, str], int] = {}
         self._active_tasks: Dict[
             tuple[str, str], bool
         ] = {}  # (account, task) -> running
@@ -194,7 +276,7 @@ class SignTaskService:
                 not self._active_tasks.get(key, False)
                 and key not in self._cleanup_tasks
             ):
-                self._active_logs.pop(key, None)
+                self._discard_active_logs(key)
 
         # Prune completed background run tasks
         done_keys = [k for k, t in self._background_run_tasks.items() if t.done()]
@@ -445,7 +527,7 @@ class SignTaskService:
         return best_text or fallback_text
 
     def _cleanup_old_logs(self):
-        """清理超过 3 天的日志（JSON 兼容文件 + SQLite 主存储）"""
+        """清理超过 3 天的历史日志与运行状态（JSON 兼容文件 + SQLite 主存储）"""
         from datetime import timedelta
 
         from backend.utils.time import utc_now
@@ -466,6 +548,21 @@ class SignTaskService:
             self._run_history_store.delete_older_than(before_iso=limit.isoformat())
         except Exception:
             pass
+
+        # 运行状态表（task_runs）同样只增不删，必须按同口径清理
+        try:
+            self._run_state_store.delete_older_than(before_iso=limit.isoformat())
+        except Exception:
+            pass
+
+        # 运行状态 JSON 兼容文件
+        if self._run_status_dir.exists():
+            for status_file in self._run_status_dir.glob("*.json"):
+                if status_file.stat().st_mtime < limit.timestamp():
+                    try:
+                        status_file.unlink()
+                    except Exception:
+                        continue
 
     def _safe_history_key(self, name: str) -> str:
         return name.replace("/", "_").replace("\\", "_")
@@ -776,6 +873,10 @@ class SignTaskService:
             )
             existing["last_run"] = latest_last_run
             existing["last_run_account_name"] = latest_last_run_account_name
+            # 共享任务的停用状态按所有账号一致；不一致时按“已停用”展示
+            existing["enabled"] = bool(existing.get("enabled", True)) and bool(
+                task.get("enabled", True)
+            )
 
         return sorted(
             grouped.values(),
@@ -890,6 +991,60 @@ class SignTaskService:
             return candidate
         return text
 
+    # 目标机器人回复在日志中的标记；同时兼容历史格式“收到来自「X」的消息:”。
+    _REPLY_MARKERS = (
+        "收到回复：",
+        "收到图片：",
+        "收到任务对象消息：",
+        "收到回复（按钮提示）：",
+        "收到来自「",
+    )
+
+    @staticmethod
+    def _normalize_legacy_reply(reply_part: str) -> str:
+        """整理历史格式（readable_message 风格）的回复片段。"""
+        text = reply_part.strip()
+        for splitter in ("」的消息:", "」对消息的更新，消息:"):
+            if splitter in text:
+                text = text.split(splitter, 1)[-1].strip()
+                break
+        if text.startswith("Message:"):
+            text = text[len("Message:") :].strip()
+        if "text: " in text:
+            return text.split("text: ", 1)[-1].split("\n")[0].strip()
+        if "图片: " in text:
+            return "[图片] " + text.split("图片: ", 1)[-1].split("\n")[0].strip()
+        return text.replace("\n", " ").strip()
+
+    def _extract_last_reply(
+        self,
+        flow_logs: List[str],
+        account_name: str,
+        task_name: str,
+    ) -> str:
+        """从执行日志中提取本账号本任务的最后一次机器人回复。
+
+        多账号并发时日志会汇入同一 logger，必须校验账号/任务前缀，
+        否则会把其他任务的回复当成本任务的执行结果。
+        """
+        expected_prefix = f"账户「{account_name}」- 任务「{task_name}」:"
+        for line in reversed(flow_logs):
+            if expected_prefix not in line:
+                continue
+            for marker in self._REPLY_MARKERS:
+                if marker not in line:
+                    continue
+                reply = line.split(marker, 1)[-1]
+                if marker == "收到来自「":
+                    reply = self._normalize_legacy_reply(reply)
+                else:
+                    reply = reply.replace("\n", " ").strip()
+                if len(reply) > 200:
+                    reply = reply[:197] + "..."
+                if reply:
+                    return reply
+        return ""
+
     def _normalize_flow_logs(
         self, flow_logs: Optional[List[str]]
     ) -> tuple[List[str], bool, int]:
@@ -899,10 +1054,12 @@ class SignTaskService:
         total = len(flow_logs)
         trimmed: List[str] = []
         truncated = total > self._history_max_flow_lines
-        for line in flow_logs[: self._history_max_flow_lines]:
+        # 保留尾部：失败原因与机器人最后回复通常出现在最后几行
+        source = flow_logs[-self._history_max_flow_lines :] if truncated else flow_logs
+        for line in source:
             text = self._repair_mojibake(str(line)).replace("\r", "").rstrip("\n")
             if len(text) > self._history_max_line_chars:
-                text = text[: self._history_max_line_chars]
+                text = text[: self._history_max_line_chars - 3] + "..."
                 truncated = True
             trimmed.append(text)
         return trimmed, truncated, total
@@ -1738,6 +1895,51 @@ class SignTaskService:
             pass
         return None
 
+    async def _send_success_notification(
+        self,
+        account_name: str,
+        task_name: str,
+        last_target_message: Optional[str] = None,
+    ) -> None:
+        """任务成功通知（默认关闭，需要在面板里显式开启）。"""
+        try:
+            from backend.services.config import get_config_service
+
+            cfg = get_config_service().get_global_settings()
+            if not cfg.get("telegram_bot_notify_enabled"):
+                return
+            if not cfg.get("telegram_bot_task_success_enabled", False):
+                return
+            bot_token = (cfg.get("telegram_bot_token") or "").strip()
+            chat_id = (cfg.get("telegram_bot_chat_id") or "").strip()
+            if not bot_token or not chat_id:
+                return
+            message_thread_id = cfg.get("telegram_bot_message_thread_id")
+            try:
+                message_thread_id = (
+                    int(message_thread_id)
+                    if message_thread_id is not None and str(message_thread_id).strip()
+                    else None
+                )
+            except (TypeError, ValueError):
+                message_thread_id = None
+
+            text = f"TG-SignPulse 任务执行成功\n账号: {account_name}\n任务: {task_name}"
+            if last_target_message:
+                text += f"\n回复: {last_target_message}"
+            from backend.services.push_notifications import send_telegram_bot_message
+
+            await send_telegram_bot_message(
+                bot_token=bot_token,
+                chat_id=chat_id,
+                text=text,
+                message_thread_id=message_thread_id,
+            )
+        except Exception as e:
+            logging.getLogger("backend.sign_tasks").warning(
+                "Failed to send Telegram success notification: %s", e
+            )
+
     async def _send_failure_notification(
         self,
         account_name: str,
@@ -1864,6 +2066,56 @@ class SignTaskService:
             )
         return not already_notified
 
+    async def health_check_accounts(self) -> Dict[str, Any]:
+        """巡检所有账号的 session 是否有效，失效账号按既有去重逻辑通知。
+
+        正在执行任务的账号直接跳过：避免与签到争抢账号连接，也避免巡检等待
+        账号锁而长时间挂住（每日巡检会覆盖到，必要时也可手动再触发）。
+        """
+        from backend.services.telegram import get_telegram_service
+        from backend.utils.account_locks import get_account_lock
+
+        telegram_service = get_telegram_service()
+        try:
+            accounts = telegram_service.list_accounts()
+        except Exception:
+            _service_logger.exception("账号巡检：读取账号列表失败")
+            raise
+
+        checked = 0
+        invalid: List[str] = []
+        skipped: List[str] = []
+        for item in accounts:
+            account_name = str(item.get("name") or "").strip()
+            if not account_name:
+                continue
+            if get_account_lock(account_name).locked():
+                skipped.append(account_name)
+                continue
+            checked += 1
+            try:
+                result = await telegram_service.check_account_status(account_name)
+            except Exception as exc:
+                _service_logger.warning("账号巡检：检查 %s 失败: %s", account_name, exc)
+                continue
+            if result.get("ok"):
+                continue
+            if result.get("needs_relogin"):
+                invalid.append(account_name)
+                message = (
+                    str(result.get("message") or "").strip()
+                    or "Session 已失效，请重新登录"
+                )
+                await self._mark_account_invalid(account_name, "定期巡检", message)
+            else:
+                _service_logger.info(
+                    "账号巡检：%s 状态为 %s（非失效，忽略）",
+                    account_name,
+                    result.get("status"),
+                )
+
+        return {"checked": checked, "invalid": invalid, "skipped": skipped}
+
     async def _check_account_before_task(
         self,
         account_name: str,
@@ -1871,7 +2123,13 @@ class SignTaskService:
         no_updates: bool,
         notify_on_failure: bool = True,
         lock_already_held: bool = False,
-    ) -> Optional[str]:
+    ) -> tuple[str, str]:
+        """执行前账号检查，返回 (状态, 说明)。
+
+        状态取值 ok / invalid / transient。transient 表示临时连接故障（超时、
+        连接错误等），调用方必须跳过本次执行并等调度重试，否则会把短时网络
+        波动放大成连续失败。
+        """
         stored_status = get_account_status(account_name)
         if stored_status.get("status") == "invalid" and stored_status.get(
             "needs_relogin"
@@ -1883,7 +2141,7 @@ class SignTaskService:
             await self._mark_account_invalid(
                 account_name, task_name, message, notify_on_failure=notify_on_failure
             )
-            return message
+            return "invalid", message
 
         try:
             from backend.services.telegram import get_telegram_service
@@ -1901,10 +2159,10 @@ class SignTaskService:
                 task_name,
                 e,
             )
-            return None
+            return "transient", f"{type(e).__name__}: {e}"
 
         if result.get("ok"):
-            return None
+            return "ok", ""
 
         needs_relogin = bool(result.get("needs_relogin"))
         status = str(result.get("status") or "")
@@ -1921,9 +2179,12 @@ class SignTaskService:
             await self._mark_account_invalid(
                 account_name, task_name, message, notify_on_failure=notify_on_failure
             )
-            return message
+            return "invalid", message
 
-        return None
+        detail = str(result.get("message") or "").strip()
+        if not detail:
+            detail = f"code={code}" if code else f"status={status or 'unknown'}"
+        return "transient", detail
 
     def _legacy_list_tasks(
         self, account_name: Optional[str] = None, force_refresh: bool = False
@@ -2442,7 +2703,7 @@ class SignTaskService:
                 random_seconds=config.get("random_seconds", 0),
                 sign_interval=config.get("sign_interval", 1),
                 daily_times=config.get("daily_times", 1),
-                enabled=True,
+                enabled=bool(config.get("enabled", True)),
                 last_run=last_run,
                 execution_mode=config.get("execution_mode", "fixed"),
                 range_start=config.get("range_start", ""),
@@ -2543,6 +2804,7 @@ class SignTaskService:
                 "range_start": range_start,
                 "range_end": range_end,
                 "notify_on_failure": notify_on_failure,
+                "enabled": True,
             }
 
             with open(task_dir / "config.json", "w", encoding="utf-8") as f:
@@ -2595,6 +2857,7 @@ class SignTaskService:
         range_start: Optional[str] = None,
         range_end: Optional[str] = None,
         notify_on_failure: Optional[bool] = None,
+        enabled: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Update one task and fan out the config to all linked accounts."""
         task_name = validate_storage_name(task_name, field_name="task_name")
@@ -2676,7 +2939,12 @@ class SignTaskService:
             if notify_on_failure is not None
             else bool(existing.get("notify_on_failure", True))
         )
-        should_schedule = next_execution_mode != "listen"
+        next_enabled = (
+            bool(enabled)
+            if enabled is not None
+            else bool(existing.get("enabled", True))
+        )
+        should_schedule = next_execution_mode != "listen" and next_enabled
 
         existing_dirs = dict(self._iter_task_dirs(task_name, existing_accounts))
         existing_last_run_map = {
@@ -2717,6 +2985,7 @@ class SignTaskService:
                 "range_start": next_range_start,
                 "range_end": next_range_end,
                 "notify_on_failure": next_notify_on_failure,
+                "enabled": next_enabled,
             }
             last_run = existing_last_run_map.get(current_account)
             if last_run:
@@ -2740,7 +3009,7 @@ class SignTaskService:
                     next_range_start
                     if next_execution_mode == "range"
                     else next_sign_at,
-                    enabled=True,
+                    enabled=next_enabled,
                     daily_times=next_daily_times,
                     execution_mode=next_execution_mode,
                 )
@@ -2858,7 +3127,12 @@ class SignTaskService:
 
             self._move_storage_path(history_file, target_file)
 
-        for mapping_name in ("_active_logs", "_active_tasks", "_cleanup_tasks"):
+        for mapping_name in (
+            "_active_logs",
+            "_active_log_trimmed",
+            "_active_tasks",
+            "_cleanup_tasks",
+        ):
             mapping = getattr(self, mapping_name)
             for key in list(mapping.keys()):
                 account_name, task_name = key
@@ -2871,6 +3145,96 @@ class SignTaskService:
             self._account_last_run_end[new_account_name] = last_run_value
 
         self._tasks_cache = None
+
+    def get_daily_stats(
+        self,
+        task_name: str = "",
+        account_name: str = "",
+        days: int = 30,
+    ) -> Dict[str, Any]:
+        """按天聚合执行结果（30 天状态条数据源）。"""
+        return self._run_history_store.daily_stats(
+            days=days,
+            task_name=task_name,
+            account_name=account_name,
+        )
+
+    def set_task_enabled(
+        self,
+        task_name: str,
+        enabled: bool,
+        account_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """启用/停用签到任务：写入所有关联账号的配置并同步调度。
+
+        停用只影响调度，不删除任务与历史记录；重新启用后按原计划继续执行。
+        """
+        task_name = validate_storage_name(task_name, field_name="task_name")
+        if account_name == "*":
+            account_name = None
+
+        related_tasks = self._find_related_task_infos(task_name, account_name)
+        if not related_tasks:
+            raise ValueError(f"任务 {task_name} 不存在")
+
+        target_accounts = [
+            str(task.get("account_name") or "").strip()
+            for task in related_tasks
+            if str(task.get("account_name") or "").strip()
+        ]
+        if not target_accounts:
+            raise ValueError(f"任务 {task_name} 没有可用的账号")
+
+        from backend.scheduler import add_or_update_sign_task_job, remove_sign_task_job
+
+        updated = 0
+        for current_account in target_accounts:
+            task_dir = self._resolve_task_dir(task_name, current_account)
+            if task_dir is None:
+                continue
+            config_file = task_dir / "config.json"
+            try:
+                with open(config_file, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+            except Exception:
+                continue
+
+            config["enabled"] = bool(enabled)
+            atomic_write_json(config_file, config, indent=2)
+            updated += 1
+
+            execution_mode = str(config.get("execution_mode") or "fixed")
+            if not enabled or execution_mode == "listen":
+                remove_sign_task_job(current_account, task_name)
+                continue
+
+            daily_times = config.get("daily_times", 1)
+            try:
+                daily_times = max(1, min(int(daily_times), 5))
+            except (TypeError, ValueError):
+                daily_times = 1
+            trigger_cron = (
+                str(config.get("range_start") or "")
+                if execution_mode == "range"
+                else str(config.get("sign_at") or "")
+            )
+            if not trigger_cron:
+                continue
+            add_or_update_sign_task_job(
+                current_account,
+                task_name,
+                trigger_cron,
+                enabled=True,
+                daily_times=daily_times,
+                execution_mode=execution_mode,
+            )
+
+        if updated == 0:
+            raise ValueError(f"任务 {task_name} 配置文件不可读")
+
+        self._tasks_cache = None
+        refreshed = self.get_task(task_name, account_name=account_name, aggregate=True)
+        return refreshed or {}
 
     def delete_task(self, task_name: str, account_name: Optional[str] = None) -> bool:
         """Delete one task or one shared multi-account task set."""
@@ -3275,35 +3639,60 @@ class SignTaskService:
         self, task_name: str, account_name: Optional[str] = None
     ) -> List[str]:
         """获取正在运行任务的日志"""
+        logs, _task_total, _monitor_total = self.get_active_logs_with_cursor(
+            task_name, account_name
+        )
+        return logs
+
+    def get_active_logs_with_cursor(
+        self, task_name: str, account_name: Optional[str] = None
+    ) -> tuple[List[str], int, int]:
+        """获取任务日志并附带累计序号，供实时推送判断是否有新增行。
+
+        日志缓冲区会截断（任务日志 1000 行、监听日志 1000 行），仅凭 len()
+        无法判断是否产生了新日志；调用方必须比较这里返回的累计序号。
+        """
         monitor_logs: List[str] = []
+        monitor_total = 0
         try:
             from backend.services.keyword_monitor import get_keyword_monitor_service
 
-            monitor_logs = get_keyword_monitor_service().get_task_logs(
-                task_name,
-                account_name,
+            monitor_logs, monitor_total = (
+                get_keyword_monitor_service().get_task_logs_with_total(
+                    task_name,
+                    account_name,
+                )
             )
         except Exception:
             monitor_logs = []
+            monitor_total = 0
 
-        if account_name:
-            logs = list(
-                self._active_logs.get(self._task_key(account_name, task_name), [])
-            )
+        def compose(logs: List[str]) -> List[str]:
             if monitor_logs:
                 if logs:
                     logs.append("---- 关键词后台监听日志 ----")
                 logs.extend(monitor_logs)
             return logs
+
+        if account_name:
+            key = self._task_key(account_name, task_name)
+            logs = list(self._active_logs.get(key, []))
+            return compose(logs), self._active_log_total(key), monitor_total
         # 兼容旧接口：返回第一个同名任务的日志
         for key in self._find_task_keys(task_name):
             logs = list(self._active_logs.get(key, []))
-            if monitor_logs:
-                if logs:
-                    logs.append("---- 关键词后台监听日志 ----")
-                logs.extend(monitor_logs)
-            return logs
-        return monitor_logs
+            return compose(logs), self._active_log_total(key), monitor_total
+        return compose([]), 0, monitor_total
+
+    def _active_log_total(self, key: tuple[str, str]) -> int:
+        """任务日志的单调递增序号：被截断的行数 + 当前缓冲区长度。"""
+        return self._active_log_trimmed.get(key, 0) + len(
+            self._active_logs.get(key, [])
+        )
+
+    def _discard_active_logs(self, key: tuple[str, str]) -> None:
+        self._active_logs.pop(key, None)
+        self._active_log_trimmed.pop(key, None)
 
     def _run_status_file_path(self, account_name: str, task_name: str) -> Path:
         safe_account = self._safe_history_key(account_name)
@@ -3713,6 +4102,7 @@ class SignTaskService:
                 return {"success": False, "error": "任务已经在运行中", "output": ""}
             self._active_tasks[task_key] = True
             self._active_logs[task_key] = []
+            self._active_log_trimmed[task_key] = 0
             if not run_id:
                 run_id = uuid.uuid4().hex
             try:
@@ -3730,7 +4120,7 @@ class SignTaskService:
                 )
             except Exception:
                 self._active_tasks[task_key] = False
-                self._active_logs.pop(task_key, None)
+                self._discard_active_logs(task_key)
                 raise
 
         # 初始化账号锁（跨服务共享）
@@ -3740,7 +4130,7 @@ class SignTaskService:
             account_lock = self._account_locks[account_name]
         except Exception:
             self._active_tasks[task_key] = False
-            self._active_logs.pop(task_key, None)
+            self._discard_active_logs(task_key)
             raise
         _service_logger.debug(f"等待获取账号锁 {account_name}...")
         manage_run_status = True
@@ -3748,6 +4138,7 @@ class SignTaskService:
         # 获取 logger 实例
         tg_logger = logging.getLogger("tg-signer")
         log_handler: Optional[TaskLogHandler] = None
+        log_context_token = None
 
         success = False
         error_msg = ""
@@ -3776,7 +4167,10 @@ class SignTaskService:
             # Serialize account checks as well as task execution. DB task
             # callers already hold this lock and must not re-enter it.
             if lock_already_held:
-                invalid_reason = await self._check_account_before_task(
+                (
+                    precheck_state,
+                    precheck_message,
+                ) = await self._check_account_before_task(
                     account_name,
                     task_name,
                     no_updates=signer_no_updates,
@@ -3784,16 +4178,25 @@ class SignTaskService:
                     lock_already_held=True,
                 )
             else:
-                invalid_reason = await self._check_account_before_task(
+                (
+                    precheck_state,
+                    precheck_message,
+                ) = await self._check_account_before_task(
                     account_name,
                     task_name,
                     no_updates=signer_no_updates,
                     notify_on_failure=task_notify_on_failure,
                 )
-            if invalid_reason:
+            if precheck_state == "invalid":
                 account_invalid_detected = True
                 error_msg = (
-                    f"账号 {account_name} 登录已失效，请重新登录: {invalid_reason}"
+                    f"账号 {account_name} 登录已失效，请重新登录: {precheck_message}"
+                )
+                self._active_logs[task_key].append(error_msg)
+            elif precheck_state == "transient":
+                error_msg = (
+                    "Telegram 连接异常，本次未执行签到，将按计划重试: "
+                    f"{precheck_message}"
                 )
                 self._active_logs[task_key].append(error_msg)
             else:
@@ -3821,13 +4224,24 @@ class SignTaskService:
                             )
                             await asyncio.sleep(wait_seconds)
 
-                    log_handler = TaskLogHandler(self._active_logs[task_key])
+                    log_handler = TaskLogHandler(
+                        self._active_logs[task_key],
+                        self._active_log_trimmed,
+                        task_key,
+                        account_name=account_name,
+                        task_name=task_name,
+                        run_id=run_id,
+                    )
                     log_handler.setLevel(logging.INFO)
                     log_handler.setFormatter(
                         logging.Formatter("%(asctime)s - %(message)s")
                     )
                     if tg_logger.getEffectiveLevel() > logging.INFO:
                         tg_logger.setLevel(logging.INFO)
+                    # 先登记本次运行身份，再挂 handler：无前缀的日志据此归属
+                    log_context_token = _current_task_run.set(
+                        (account_name, task_name, run_id)
+                    )
                     tg_logger.addHandler(log_handler)
 
                     _service_logger.info(
@@ -3919,6 +4333,7 @@ class SignTaskService:
                         api_id=api_id,
                         api_hash=api_hash,
                         no_updates=signer_no_updates,
+                        task_run_id=run_id,
                     )
 
                     # 执行任务（数据库锁冲突时重试，带超时保护）
@@ -3986,6 +4401,9 @@ class SignTaskService:
             try:
                 if log_handler is not None:
                     tg_logger.removeHandler(log_handler)
+                if log_context_token is not None:
+                    _current_task_run.reset(log_context_token)
+                    log_context_token = None
 
                 # 保存执行记录
                 final_logs = list(self._active_logs.get(task_key, []))
@@ -3993,48 +4411,9 @@ class SignTaskService:
 
                 last_reply = ""
                 if success:
-                    for line in reversed(final_logs):
-                        if "收到来自「" in line and (
-                            "」的消息:" in line or "」对消息的更新，消息:" in line
-                        ):
-                            try:
-                                splitter = (
-                                    "」的消息:"
-                                    if "」的消息:" in line
-                                    else "」对消息的更新，消息:"
-                                )
-                                reply_part = line.split(splitter, 1)[-1].strip()
-                                if reply_part.startswith("Message:"):
-                                    reply_part = reply_part[len("Message:") :].strip()
-
-                                if "text: " in reply_part:
-                                    text_content = (
-                                        reply_part.split("text: ", 1)[-1]
-                                        .split("\n")[0]
-                                        .strip()
-                                    )
-                                    if text_content:
-                                        last_reply = text_content
-                                    elif "图片: " in reply_part:
-                                        last_reply = (
-                                            "[图片] "
-                                            + reply_part.split("图片: ", 1)[-1]
-                                            .split("\n")[0]
-                                            .strip()
-                                        )
-                                    else:
-                                        last_reply = reply_part.replace(
-                                            "\n", " "
-                                        ).strip()
-                                else:
-                                    last_reply = reply_part.replace("\n", " ").strip()
-
-                                if len(last_reply) > 200:
-                                    last_reply = last_reply[:197] + "..."
-                            except Exception:
-                                pass
-                            if last_reply:
-                                break
+                    last_reply = self._extract_last_reply(
+                        final_logs, account_name, task_name
+                    )
                     if last_reply:
                         reply_lower = last_reply.lower()
                         failure_keywords = (
@@ -4134,6 +4513,12 @@ class SignTaskService:
                         last_target_message=last_target_message or None,
                         flow_logs=final_logs,
                     )
+                elif success:
+                    await self._send_success_notification(
+                        account_name,
+                        task_name,
+                        last_target_message=last_target_message or None,
+                    )
             finally:
                 self._active_tasks[task_key] = False
 
@@ -4146,7 +4531,7 @@ class SignTaskService:
                 try:
                     await asyncio.sleep(60)
                     if not self._active_tasks.get(task_key):
-                        self._active_logs.pop(task_key, None)
+                        self._discard_active_logs(task_key)
                 finally:
                     self._cleanup_tasks.pop(task_key, None)
                     trim_memory()
@@ -4165,6 +4550,7 @@ class SignTaskService:
             "success": success,
             "output": output_str,
             "error": error_msg,
+            "account_invalid": account_invalid_detected,
         }
 
 

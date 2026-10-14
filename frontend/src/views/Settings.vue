@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { getGlobalSettings, saveGlobalSettings, getTelegramConfig, saveTelegramConfig, resetTelegramConfig, getAIConfig, saveAIConfig, testAIConnection, exportAllConfigs, importAllConfigs } from '../lib/api'
+import { getGlobalSettings, saveGlobalSettings, getTelegramConfig, saveTelegramConfig, resetTelegramConfig, getAIConfig, saveAIConfig, testAIConnection, exportAllConfigs, importAllConfigs, testTelegramBot } from '../lib/api'
 import { useI18n } from '../composables/useI18n'
+import { useToast } from '../composables/useToast'
+import { confirmDialog } from '../composables/useConfirm'
 
 const { t } = useI18n()
+const toast = useToast()
 
 const settings = ref({
   checkInterval: '',
@@ -14,6 +17,7 @@ const settings = ref({
   botEnabled: false,
   botLoginNotify: false,
   botTaskFailure: false,
+  botTaskSuccess: false,
   botToken: '',
   botChatId: '',
   botThreadId: ''
@@ -34,12 +38,8 @@ const loading = ref(false)
 const tgLoading = ref(false)
 const aiLoading = ref(false)
 const dataLoading = ref(false)
-const toastMsg = ref('')
-
-const showToast = (msg: string) => {
-  toastMsg.value = msg
-  setTimeout(() => toastMsg.value = '', 3000)
-}
+// 统一使用全局 toast（与任务/账号页一致）
+const showToast = (msg: string) => toast.info(msg)
 
 onMounted(async () => {
   const token = localStorage.getItem('tg-signer-token') || ''
@@ -59,6 +59,7 @@ onMounted(async () => {
     settings.value.botEnabled = res.telegram_bot_notify_enabled || false
     settings.value.botLoginNotify = res.telegram_bot_login_notify_enabled || false
     settings.value.botTaskFailure = res.telegram_bot_task_failure_enabled || false
+    settings.value.botTaskSuccess = res.telegram_bot_task_success_enabled || false
     settings.value.botToken = res.telegram_bot_token || ''
     settings.value.botChatId = res.telegram_bot_chat_id || ''
     settings.value.botThreadId = res.telegram_bot_message_thread_id ? String(res.telegram_bot_message_thread_id) : ''
@@ -99,6 +100,25 @@ const saveSettings = async () => {
   }
 }
 
+const botTesting = ref(false)
+
+const handleTestBot = async () => {
+  const token = localStorage.getItem('tg-signer-token') || ''
+  botTesting.value = true
+  try {
+    const res = await testTelegramBot(token, {
+      bot_token: settings.value.botToken || null,
+      chat_id: settings.value.botChatId || null,
+      message_thread_id: settings.value.botThreadId ? Number(settings.value.botThreadId) : null,
+    })
+    toast.success(res.message || t('settings.testSuccess'))
+  } catch (e: any) {
+    toast.error(e.message || t('settings.testFailed'))
+  } finally {
+    botTesting.value = false
+  }
+}
+
 const botLoading = ref(false)
 
 const saveBotSettings = async () => {
@@ -111,6 +131,7 @@ const saveBotSettings = async () => {
       telegram_bot_notify_enabled: settings.value.botEnabled,
       telegram_bot_login_notify_enabled: settings.value.botLoginNotify,
       telegram_bot_task_failure_enabled: settings.value.botTaskFailure,
+      telegram_bot_task_success_enabled: settings.value.botTaskSuccess,
       telegram_bot_token: settings.value.botToken || null,
       telegram_bot_chat_id: settings.value.botChatId || null,
       telegram_bot_message_thread_id: settings.value.botThreadId ? parseInt(settings.value.botThreadId) : null,
@@ -138,7 +159,8 @@ const saveTgConfig = async () => {
 
 const resetTgConfig = async () => {
   const token = localStorage.getItem('tg-signer-token') || ''
-  if (!confirm(t('settings.resetConfirm'))) return
+  const confirmed = await confirmDialog(t('settings.resetConfirm'), { danger: true })
+  if (!confirmed) return
   tgLoading.value = true
   try {
     await resetTelegramConfig(token)
@@ -258,6 +280,10 @@ const handleImport = async (e: Event) => {
               <label class="text-xs text-gray-500 block">{{ t('settings.concurrency') }}</label>
               <input v-model.number="settings.concurrency" type="number" min="1" max="10" :placeholder="t('settings.concurrencyPlaceholder')" class="w-full bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-transparent text-gray-900 dark:text-gray-200 px-3 py-2 text-sm outline-none transition-colors focus:bg-white dark:focus:bg-gray-800 placeholder:text-gray-400">
             </div>
+            <div class="space-y-1.5">
+              <label class="text-xs text-gray-500 block">{{ t('settings.signInterval') }}</label>
+              <input v-model="settings.checkInterval" type="number" min="0" max="3600" :placeholder="t('settings.signIntervalPlaceholder')" class="w-full bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-transparent text-gray-900 dark:text-gray-200 px-3 py-2 text-sm outline-none transition-colors focus:bg-white dark:focus:bg-gray-800 placeholder:text-gray-400">
+            </div>
             <div class="pt-2">
               <button @click="saveSettings" :disabled="loading" class="w-full py-2 text-sm bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-950 hover:bg-gray-800 dark:hover:bg-white transition-colors disabled:opacity-50">{{ loading ? t('settings.saving') : t('settings.saveGeneral') }}</button>
             </div>
@@ -360,6 +386,15 @@ const handleImport = async (e: Event) => {
                 <input v-model="settings.botTaskFailure" type="checkbox" class="w-4 h-4 text-gray-900 dark:text-gray-100 bg-gray-100 border-gray-300 rounded focus:ring-0 dark:bg-gray-800 dark:border-gray-600">
                 <span class="text-sm text-gray-700 dark:text-gray-300 group-hover:text-gray-900 dark:group-hover:text-gray-100 transition-colors">{{ t('settings.taskFailNotify') }}</span>
               </label>
+              <label class="flex items-center gap-2 cursor-pointer group">
+                <input v-model="settings.botTaskSuccess" type="checkbox" class="w-4 h-4 text-gray-900 dark:text-gray-100 bg-gray-100 border-gray-300 rounded focus:ring-0 dark:bg-gray-800 dark:border-gray-600">
+                <span class="text-sm text-gray-700 dark:text-gray-300 group-hover:text-gray-900 dark:group-hover:text-gray-100 transition-colors">{{ t('settings.taskSuccessNotify') }}</span>
+              </label>
+              <button
+                @click="handleTestBot"
+                :disabled="botTesting"
+                class="px-3 py-1.5 text-xs rounded-full border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+              >{{ botTesting ? t('settings.testing') : t('settings.testNotify') }}</button>
             </div>
             <div class="pt-2">
               <button @click="saveBotSettings" :disabled="botLoading" class="w-full py-2 text-sm bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-950 hover:bg-gray-800 dark:hover:bg-white transition-colors disabled:opacity-50">{{ botLoading ? t('settings.saving') : t('settings.saveChanges') }}</button>
@@ -405,18 +440,5 @@ const handleImport = async (e: Event) => {
 
     </div>
 
-    <!-- Toast Notification -->
-    <Transition
-      enter-active-class="transition duration-200 ease-out"
-      enter-from-class="opacity-0 translate-y-2"
-      enter-to-class="opacity-100 translate-y-0"
-      leave-active-class="transition duration-150 ease-in"
-      leave-from-class="opacity-100 translate-y-0"
-      leave-to-class="opacity-0 translate-y-2"
-    >
-      <div v-if="toastMsg" class="fixed bottom-10 right-10 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 px-4 py-2 text-sm shadow-xl z-50">
-        {{ toastMsg }}
-      </div>
-    </Transition>
   </div>
 </template>

@@ -76,3 +76,40 @@ async def test_db_task_cancellation_persists_terminal_status(db_session, monkeyp
     log = db_session.query(tasks_mod.TaskLog).filter_by(task_id=task.id).one()
     assert log.status == "cancelled"
     assert log.finished_at is not None
+
+
+def test_active_log_cursor_keeps_growing_after_buffer_is_full(monkeypatch, tmp_path):
+    """回归：缓冲区打满后长度恒定，但累计序号必须继续增长，实时推送不能停住。"""
+    import logging
+
+    from backend.core.config import Settings
+    from backend.services.sign_tasks import TaskLogHandler
+
+    monkeypatch.setattr(Settings, "resolve_workdir", lambda self: tmp_path / "workdir")
+    service = get_sign_task_service()
+    key = ("acct_cursor", "task_cursor")
+    service._active_logs[key] = []
+    service._active_log_trimmed[key] = 0
+    try:
+        handler = TaskLogHandler(
+            service._active_logs[key], service._active_log_trimmed, key
+        )
+        test_logger = logging.getLogger("test-log-cursor")
+        test_logger.addHandler(handler)
+        test_logger.setLevel(logging.INFO)
+        try:
+            for index in range(1200):
+                test_logger.info("line-%d", index)
+        finally:
+            test_logger.removeHandler(handler)
+
+        logs, task_total, monitor_total = service.get_active_logs_with_cursor(
+            "task_cursor", account_name="acct_cursor"
+        )
+        assert len(logs) == 1000
+        assert logs[-1] == "line-1199"
+        # 长度已封顶在 1000，序号仍单调增长到 1200
+        assert task_total == 1200
+        assert monitor_total == 0
+    finally:
+        service._discard_active_logs(key)

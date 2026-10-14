@@ -4,15 +4,67 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 env:
   IMAGE_NAME: tg-signpulse
 
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-and-push:
+  # PR 阶段只验证镜像可构建（不推送），避免带着坏镜像合并
+  test-build:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check docs-only change
+        id: changed
+        run: |
+          set -eu
+          git fetch --no-tags --depth=1 origin "${GITHUB_BASE_REF}"
+          CHANGED="$(git diff --name-only "origin/${GITHUB_BASE_REF}...HEAD")"
+          echo "变更文件："; echo "$CHANGED"
+          if [ -z "$CHANGED" ] || ! echo "$CHANGED" | grep -qvE '\.(md)$|^(docs|doc)/'; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip when only docs changed
+        if: steps.changed.outputs.code != 'true'
+        run: echo "仅文档变更，跳过镜像构建"
+
+      - name: Set up Docker Buildx
+        if: steps.changed.outputs.code == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        if: steps.changed.outputs.code == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-and-push:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -22,6 +74,21 @@ jobs:
 
       - name: Lowercase image name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ env.IMAGE_NAME }}" >> "$GITHUB_ENV"
+
+      - name: Verify version matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -eu
+          VERSION="$(python3 -c "import re,pathlib;print(re.search(r'__version__\s*=\s*[\"\\']([^\"\\']+)', pathlib.Path('tg_signer/__init__.py').read_text(encoding='utf-8')).group(1))")"
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "程序版本=$VERSION 发布标签=$TAG"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "::error::发布标签 v$TAG 与 tg_signer/__init__.py 中的版本 $VERSION 不一致"
+            exit 1
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -41,7 +108,9 @@ jobs:
           flavor: |
             latest=false
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            # latest 只在正式版本标签上更新，避免 main 分支覆盖已发布版本
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
             type=sha,format=short
 
@@ -50,8 +119,11 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

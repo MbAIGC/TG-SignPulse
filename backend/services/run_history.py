@@ -234,6 +234,80 @@ class RunHistoryStore:
         return [_row_to_entry(row, cols) for row in rows]
 
     # ---- 删除 ----
+    def daily_stats(
+        self,
+        *,
+        days: int = 30,
+        task_name: str = "",
+        account_name: str = "",
+    ) -> Dict[str, Any]:
+        """按本地时区聚合最近 N 天的执行结果，用于 30 天状态条。
+
+        只统计有记录的日期也会补零，前端据此区分「无记录」与「失败」。
+        """
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        from backend.core.config import get_settings
+        from backend.utils.time import utc_now
+
+        days = max(1, min(int(days), 90))
+        try:
+            tz = ZoneInfo(get_settings().timezone)
+        except Exception:
+            tz = ZoneInfo("Asia/Shanghai")
+
+        today = utc_now().astimezone(tz).date()
+        first_day = today - timedelta(days=days - 1)
+        since_utc = (
+            datetime.combine(first_day, datetime.min.time(), tzinfo=tz)
+            .astimezone(ZoneInfo("UTC"))
+            .isoformat()
+        )
+
+        sql = "SELECT time, success FROM run_history WHERE time >= ?"
+        params: List[Any] = [since_utc]
+        if task_name:
+            sql += " AND task_name = ?"
+            params.append(task_name)
+        if account_name:
+            sql += " AND account_name = ?"
+            params.append(account_name)
+
+        buckets: Dict[str, Dict[str, int]] = {}
+        try:
+            rows = self._conn().execute(sql, params).fetchall()
+        except sqlite3.Error:
+            rows = []
+        for row in rows:
+            time_str = str(row[0] or "")
+            try:
+                moment = datetime.fromisoformat(time_str)
+            except ValueError:
+                continue
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=ZoneInfo("UTC"))
+            key = moment.astimezone(tz).date().isoformat()
+            bucket = buckets.setdefault(key, {"success": 0, "failed": 0})
+            bucket["success" if row[1] else "failed"] += 1
+
+        result: List[Dict[str, Any]] = []
+        for offset in range(days - 1, -1, -1):
+            day = (today - timedelta(days=offset)).isoformat()
+            bucket = buckets.get(day, {"success": 0, "failed": 0})
+            result.append({"date": day, **bucket})
+
+        total_success = sum(item["success"] for item in result)
+        total_failed = sum(item["failed"] for item in result)
+        total = total_success + total_failed
+        return {
+            "days": result,
+            "success": total_success,
+            "failed": total_failed,
+            "total": total,
+            "success_rate": round(total_success / total, 4) if total else None,
+        }
+
     def delete_entry(
         self,
         *,

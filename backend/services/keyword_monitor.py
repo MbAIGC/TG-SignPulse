@@ -26,6 +26,19 @@ from backend.utils.tg_session import (
 
 logger = logging.getLogger("backend.keyword_monitor")
 settings = get_settings()
+
+# 关键词监听 handler 使用独立处理组（签到 handler 在默认组 0）：
+# 同组时监听与签到会争抢同一条机器人回复。
+MONITOR_HANDLER_GROUP = 10
+# 看门狗巡检间隔与单次探测超时
+MONITOR_HEALTH_INTERVAL = 30.0
+MONITOR_HEALTH_TIMEOUT = 8.0
+# 连续探测失败多少次才重建连接
+MONITOR_HEALTH_FAILURE_THRESHOLD = 2
+# 监听启动超时与失败退避（30s → 300s）
+MONITOR_START_TIMEOUT = 30.0
+MONITOR_RESTART_BASE_DELAY = 30.0
+MONITOR_RESTART_MAX_DELAY = 300.0
 _PYROGRAM_IMPORT_ERROR: Exception | None = None
 
 try:
@@ -426,10 +439,112 @@ class KeywordMonitorService:
         self._active_key = ""
         self._lock = asyncio.Lock()
         self._task_logs: dict[tuple[str, str], list[str]] = {}
+        # 监听日志的累计追加条数：缓冲区会截断，len() 无法反映是否有新日志，
+        # 实时推送必须依赖这个单调递增的序号。
+        self._task_log_totals: dict[tuple[str, str], int] = {}
         self._task_status: dict[tuple[str, str], dict[str, Any]] = {}
         self._skip_log_times: dict[tuple[str, str, str], float] = {}
         self._ai_tools: Optional[Any] = None
         self._ai_cfg_signature: Optional[tuple[str, str, str]] = None
+        # 看门狗：连接标志为真也可能收不到消息，需要真实 RPC 探测
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._health_failures: dict[str, int] = {}
+        self._restart_failures: dict[str, int] = {}
+        self._restart_retry_at: dict[str, float] = {}
+
+    def _active_handler_accounts(self) -> set[str]:
+        """当前真正可用的监听账号：已连接、已初始化且开启了更新。"""
+        return {
+            account_name
+            for account_name, client, _handler_ref in self._handler_refs
+            if getattr(client, "is_connected", False)
+            and getattr(client, "is_initialized", False)
+            and getattr(client, "_tg_signpulse_no_updates", None) is False
+        }
+
+    def _start_watchdog(self) -> None:
+        task = self._watchdog_task
+        if task is not None and not task.done():
+            return
+        self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+        logger.info("关键词监听看门狗已启动（每 %.0fs 巡检一次）", MONITOR_HEALTH_INTERVAL)
+
+    async def _watchdog_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(MONITOR_HEALTH_INTERVAL)
+            except asyncio.CancelledError:
+                raise
+            try:
+                await self._watchdog_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("关键词监听看门狗巡检异常")
+
+    async def _watchdog_tick(self) -> None:
+        """探测监听连接是否真的活着，必要时重建。
+
+        跳过正被签到任务占用的账号：避免与签到争抢账号锁，也避免把
+        任务执行期间的正常静默误判为连接故障。
+        """
+        expected = {rule.account_name for rule in self._rules}
+        if not expected:
+            return
+
+        active = self._active_handler_accounts()
+        clients = {
+            account_name: client for account_name, client, _ref in self._handler_refs
+        }
+        now = time.monotonic()
+        restart_needed = False
+        for account_name in sorted(expected):
+            if get_account_lock(account_name).locked():
+                continue
+            if account_name not in active:
+                # 曾启动失败的账号按退避重试
+                if now >= self._restart_retry_at.get(account_name, 0.0):
+                    logger.info("关键词监听账号 %s 未在运行，尝试重新启动", account_name)
+                    restart_needed = True
+                continue
+
+            client = clients.get(account_name)
+            if client is None:
+                restart_needed = True
+                continue
+
+            try:
+                await asyncio.wait_for(
+                    client.get_me(), timeout=MONITOR_HEALTH_TIMEOUT
+                )
+            except asyncio.CancelledError:
+                raise
+            except errors.FloodWait as exc:
+                # 收到限流说明服务可达，不计入连接失败
+                logger.warning(
+                    "关键词监听账号 %s 探测被限流 %ss，视为连接正常",
+                    account_name,
+                    getattr(exc, "value", "?"),
+                )
+                self._health_failures[account_name] = 0
+            except Exception as exc:
+                failures = self._health_failures.get(account_name, 0) + 1
+                self._health_failures[account_name] = failures
+                logger.warning(
+                    "关键词监听账号 %s 探测失败 (%s/%s): %s",
+                    account_name,
+                    failures,
+                    MONITOR_HEALTH_FAILURE_THRESHOLD,
+                    exc,
+                )
+                if failures >= MONITOR_HEALTH_FAILURE_THRESHOLD:
+                    restart_needed = True
+            else:
+                self._health_failures[account_name] = 0
+
+        if restart_needed:
+            self._active_key = ""  # 绕过“配置未变则复用”的早退，强制重建
+            await self.restart_from_tasks()
 
     async def _ensure_client_ready(self, client: Any) -> None:
         if getattr(client, "is_connected", False):
@@ -534,6 +649,7 @@ class KeywordMonitorService:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         logs = self._task_logs.setdefault(key, [])
         logs.append(f"{timestamp} - {line}")
+        self._task_log_totals[key] = self._task_log_totals.get(key, 0) + 1
         if len(logs) > 1000:
             del logs[:-1000]
 
@@ -557,6 +673,37 @@ class KeywordMonitorService:
             active=active,
         )
 
+    async def _push_keyword_match(
+        self,
+        *,
+        rule: KeywordMonitorRule,
+        push_channel: str,
+        global_settings: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        """按配置的渠道推送关键词命中；失败写入规则日志，不影响后续动作。"""
+        push_settings = dict(global_settings)
+        push_settings["keyword_monitor_push_channel"] = push_channel
+        push_settings["keyword_monitor_bark_url"] = rule.action.get("bark_url")
+        push_settings["keyword_monitor_custom_url"] = rule.action.get("custom_url")
+        try:
+            await send_keyword_push(push_settings, payload)
+        except Exception as exc:
+            logger.warning(
+                "Failed to push keyword match via %s: %s",
+                push_channel,
+                exc,
+            )
+            self._append_rule_log(
+                rule,
+                f"关键词命中通知发送失败：推送方式={push_channel}，错误={exc}",
+            )
+        else:
+            self._append_rule_log(
+                rule,
+                f"关键词命中通知已处理：推送方式={push_channel}",
+            )
+
     def get_task_logs(self, task_name: str, account_name: Optional[str] = None) -> list[str]:
         if account_name:
             return list(self._task_logs.get(self._task_key(account_name, task_name), []))
@@ -565,6 +712,23 @@ class KeywordMonitorService:
             if item_task == task_name:
                 return list(logs)
         return []
+
+    def get_task_logs_with_total(
+        self, task_name: str, account_name: Optional[str] = None
+    ) -> tuple[list[str], int]:
+        """返回监听日志与累计追加条数，供实时推送判断是否有新增。"""
+        if account_name:
+            key = self._task_key(account_name, task_name)
+            return (
+                list(self._task_logs.get(key, [])),
+                self._task_log_totals.get(key, 0),
+            )
+
+        for (item_account, item_task), logs in self._task_logs.items():
+            if item_task == task_name:
+                key = self._task_key(item_account, item_task)
+                return list(logs), self._task_log_totals.get(key, 0)
+        return [], 0
 
     def get_task_history_entry(
         self,
@@ -650,13 +814,7 @@ class KeywordMonitorService:
         if not expected_accounts:
             return not self._handler_refs
 
-        active_accounts = {
-            account_name
-            for account_name, client, _handler_ref in self._handler_refs
-            if getattr(client, "is_connected", False)
-            and getattr(client, "_tg_signpulse_no_updates", None) is False
-        }
-        return expected_accounts.issubset(active_accounts)
+        return expected_accounts.issubset(self._active_handler_accounts())
 
     def _load_rules(self) -> list[KeywordMonitorRule]:
         from backend.services.sign_tasks import get_sign_task_service
@@ -1607,15 +1765,11 @@ class KeywordMonitorService:
                         )
 
                 if push_channel not in {"forward", "continue"}:
-                    push_settings = dict(global_settings)
-                    push_settings["keyword_monitor_push_channel"] = push_channel
-                    push_settings["keyword_monitor_bark_url"] = rule.action.get("bark_url")
-                    push_settings["keyword_monitor_custom_url"] = rule.action.get(
-                        "custom_url"
-                    )
-                    await send_keyword_push(
-                        push_settings,
-                        {
+                    await self._push_keyword_match(
+                        rule=rule,
+                        push_channel=push_channel,
+                        global_settings=global_settings,
+                        payload={
                             "title": "TG-SignPulse keyword matched",
                             "body": forward_text,
                             "text": text,
@@ -1628,10 +1782,6 @@ class KeywordMonitorService:
                             "message_id": message.id,
                             "url": url,
                         },
-                    )
-                    self._append_rule_log(
-                        rule,
-                        f"关键词命中通知已处理：推送方式={push_channel}",
                     )
                 if continue_enabled:
                     await self._execute_continue_actions(
@@ -1687,6 +1837,15 @@ class KeywordMonitorService:
             started_accounts: set[str] = set()
             for account_name in accounts:
                 account_rules = [rule for rule in rules if rule.account_name == account_name]
+                # 启动失败的账号按退避等待，避免被反复重试打爆
+                retry_at = self._restart_retry_at.get(account_name, 0.0)
+                if retry_at and time.monotonic() < retry_at:
+                    logger.info(
+                        "关键词监听账号 %s 处于重试退避中（剩余 %.0fs），跳过本次启动",
+                        account_name,
+                        retry_at - time.monotonic(),
+                    )
+                    continue
                 chat_ids = sorted({rule.chat_id for rule in account_rules})
                 proxy_value = get_account_proxy(account_name)
                 if not proxy_value:
@@ -1748,28 +1907,52 @@ class KeywordMonitorService:
                         MessageHandler(
                             handler,
                             filters.chat(chat_ids) & (filters.text | filters.caption),
-                        )
+                        ),
+                        group=MONITOR_HANDLER_GROUP,
                     )
                     try:
-                        await client.__aenter__()
-                    except Exception:
+                        await asyncio.wait_for(
+                            client.__aenter__(), timeout=MONITOR_START_TIMEOUT
+                        )
+                    except Exception as exc:
                         try:
                             client.remove_handler(*handler_ref)
                         except Exception:
                             pass
+                        failures = min(
+                            self._restart_failures.get(account_name, 0) + 1, 6
+                        )
+                        self._restart_failures[account_name] = failures
+                        retry_delay = min(
+                            MONITOR_RESTART_BASE_DELAY * (2 ** (failures - 1)),
+                            MONITOR_RESTART_MAX_DELAY,
+                        )
+                        if isinstance(exc, errors.FloodWait):
+                            retry_delay = max(
+                                retry_delay, float(getattr(exc, "value", 0) or 0)
+                            )
+                        self._restart_retry_at[account_name] = (
+                            time.monotonic() + retry_delay
+                        )
                         logger.warning(
-                            "Keyword monitor failed to start for %s",
+                            "关键词监听账号 %s 启动失败（第 %s 次），%.0fs 后自动重试",
                             account_name,
+                            failures,
+                            retry_delay,
                             exc_info=True,
                         )
                         for rule in account_rules:
                             self._append_rule_log(
                                 rule,
-                                "关键词后台监听启动失败：Telegram client 启动失败，请检查账号登录状态、代理或 API 配置",
+                                "关键词后台监听启动失败：Telegram client 启动失败，"
+                                f"将在 {int(retry_delay)} 秒后自动重试",
                                 active=False,
                             )
                         continue
 
+                    self._restart_failures.pop(account_name, None)
+                    self._restart_retry_at.pop(account_name, None)
+                    self._health_failures[account_name] = 0
                     self._handler_refs.append((account_name, client, handler_ref))
                     started_accounts.add(account_name)
                     logger.info(
@@ -1783,8 +1966,17 @@ class KeywordMonitorService:
                         )
 
             self._active_key = key if started_accounts == set(accounts) else ""
+            if rules:
+                self._start_watchdog()
 
     async def stop(self) -> None:
+        # 看门狗自身触发重启时会走到这里：不能取消正在运行的自己，
+        # 否则 CancelledError 会把重启打断在半路，且看门狗随之退出。
+        watchdog = self._watchdog_task
+        if watchdog is not None and watchdog is not asyncio.current_task():
+            if not watchdog.done():
+                watchdog.cancel()
+            self._watchdog_task = None
         for rule in self._rules:
             self._append_rule_log(
                 rule,

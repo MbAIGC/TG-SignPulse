@@ -1482,6 +1482,102 @@ def test_normal_run_skips_username_resolution_errors_per_chat(signer_factory):
     assert signed_chats == [123456]
 
 
+def test_normal_run_does_not_persist_record_when_any_chat_fails(signer_factory):
+    """回归：任一目标会话签到失败都不能把当天写成已完成，否则漏签被当成已签。"""
+
+    signer = signer_factory()
+    signer.user = SimpleNamespace(id=1)
+    signer.context = signer.ensure_ctx()
+    signer._validate_sign_at = lambda *_: "0 0 * * *"
+    signer.load_sign_record = lambda: {}
+    persisted = []
+    signer.persist_sign_record = lambda *args, **kwargs: persisted.append(args)
+
+    config = SignConfigV3(
+        chats=[
+            SignChatV3(chat_id=123456, actions=[SendTextAction(text="ok")]),
+            SignChatV3(chat_id=234567, actions=[SendTextAction(text="boom")]),
+        ],
+        sign_at="0 0 * * *",
+        sign_interval=0,
+    )
+    signer.load_config = lambda _cls: config
+
+    attempted = []
+
+    async def fake_sign_a_chat(chat):
+        attempted.append(chat.chat_id)
+        if chat.chat_id == 234567:
+            raise RuntimeError("目标机器人没有回复")
+
+    signer.sign_a_chat = fake_sign_a_chat
+
+    class DummyApp:
+        key = "dummy-app"
+
+        def add_handler(self, *_args, **_kwargs):
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    signer.app = DummyApp()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        asyncio.run(signer.normal_run(only_once=True))
+
+    # 两个会话都被尝试过，但整轮判定失败且不得写入签到记录
+    assert attempted == [123456, 234567]
+    assert persisted == []
+    assert "1/2 个会话执行失败" in str(exc_info.value)
+    assert "chat_id=234567" in str(exc_info.value)
+
+
+def test_normal_run_chains_network_cause_for_retry_detection(signer_factory):
+    """回归：网络类失败要把原始异常挂到 __cause__，供上层识别瞬时故障。"""
+
+    signer = signer_factory()
+    signer.user = SimpleNamespace(id=1)
+    signer.context = signer.ensure_ctx()
+    signer._validate_sign_at = lambda *_: "0 0 * * *"
+    signer.load_sign_record = lambda: {}
+    signer.persist_sign_record = lambda *_args, **_kwargs: None
+
+    config = SignConfigV3(
+        chats=[SignChatV3(chat_id=123456, actions=[SendTextAction(text="ok")])],
+        sign_at="0 0 * * *",
+        sign_interval=0,
+    )
+    signer.load_config = lambda _cls: config
+
+    async def fake_sign_a_chat(_chat):
+        raise OSError("connection reset by peer")
+
+    signer.sign_a_chat = fake_sign_a_chat
+
+    class DummyApp:
+        key = "dummy-app"
+
+        def add_handler(self, *_args, **_kwargs):
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    signer.app = DummyApp()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        asyncio.run(signer.normal_run(only_once=True))
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+
+
 def test_normal_run_clears_only_current_chat_route_key(signer_factory):
     """回归：A chat 完成只清 A 自己的 route_key，不清 B chat 的消息缓存。
     合并时残留的全量清理会误清其他 chat 的目标消息（review 2.2）。"""

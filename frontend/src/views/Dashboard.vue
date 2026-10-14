@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { listAccounts, listSignTasks, getRecentAccountLogs } from '../lib/api'
+import { listAccounts, listSignTasks, getRecentAccountLogs, getOverallDailyStats } from '../lib/api'
 import { useI18n } from '../composables/useI18n'
 import Modal from '../components/Modal.vue'
+import TaskPulse from '../components/TaskPulse.vue'
 
-const { t } = useI18n()
+const { t, locale: lang } = useI18n()
 
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 const selectedLog = ref<any>(null)
@@ -17,6 +18,8 @@ const stats = ref([
 ])
 
 const logs = ref<any[]>([])
+const pulseDays = ref<Array<{ date: string; success: number; failed: number }>>([])
+const pulseRate = ref<number | null>(null)
 const pageLoading = ref(true)
 const formatTime = (isoString: string) => {
   if (!isoString) return ''
@@ -71,6 +74,12 @@ const loadDashboardData = async () => {
       { key: 'dashboard.recentFailure', value: `${todayFail}` },
     ]
 
+    try {
+      const pulse = await getOverallDailyStats(token, 30)
+      pulseDays.value = pulse.days || []
+      pulseRate.value = pulse.success_rate
+    } catch (e) { console.error('Failed to load daily stats', e) }
+
     if (Array.isArray(logsRes)) {
       logs.value = logsRes.map((l: any) => ({
         time: formatTime(l.created_at),
@@ -100,6 +109,27 @@ const loadDashboardData = async () => {
       >
         <span class="text-xs text-gray-500 font-medium tracking-wide">{{ t(stat.key) }}</span>
         <span class="text-2xl font-mono text-gray-900 dark:text-gray-100 mt-2">{{ stat.value }}</span>
+      </div>
+    </div>
+
+    <!-- 30 天整体脉搏 -->
+    <div class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800/60 p-5">
+      <div class="flex items-center justify-between mb-4">
+        <span class="text-xs text-gray-500 font-medium tracking-wide">{{ t('dashboard.pulse30d') }}</span>
+        <span class="text-xs font-mono text-gray-500">
+          {{ pulseRate === null ? t('dashboard.pulseNoData') : Math.round(pulseRate * 1000) / 10 + '%' }}
+        </span>
+      </div>
+      <TaskPulse :days="pulseDays" :height="48" :locale="lang" />
+      <div class="mt-2 flex justify-between text-[10px] text-gray-400">
+        <span>{{ pulseDays[0]?.date || '' }}</span>
+        <span>{{ pulseDays[pulseDays.length - 1]?.date || '' }}</span>
+      </div>
+      <div class="mt-3 flex items-center gap-4 text-[11px] text-gray-500">
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-[3px] bg-emerald-500"></span>{{ t('dashboard.pulseOk') }}</span>
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-[3px] bg-amber-400"></span>{{ t('dashboard.pulseMixed') }}</span>
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-[3px] bg-rose-500"></span>{{ t('dashboard.pulseBad') }}</span>
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-[3px] bg-gray-200 dark:bg-gray-800"></span>{{ t('dashboard.pulseNone') }}</span>
       </div>
     </div>
 

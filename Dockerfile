@@ -19,6 +19,11 @@ ENV PIP_NO_CACHE_DIR=1 \
 WORKDIR /build
 
 COPY pyproject.toml README.md LICENSE ./
+# build-essential 只在依赖阶段使用（运行镜像不包含）：tgcrypto 需要编译，
+# 多架构构建（arm64/QEMU）也依赖它。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
     && /opt/venv/bin/pip install tgcrypto
@@ -33,16 +38,38 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     APP_DATA_DIR=/data
 
+# 构建信息（供版本展示与排查）
+ARG BUILD_DATE=""
+ARG BUILD_SHA=""
+ENV BUILD_DATE="${BUILD_DATE}" \
+    BUILD_SHA="${BUILD_SHA}"
+
+# tzdata: 支持 TZ 环境变量；gosu: entrypoint 降权运行
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata gosu \
+    && rm -rf /var/lib/apt/lists/*
+
+# 非 root 运行用户；entrypoint 会按 /data 属主自适应
+ARG APP_UID=10001
+ARG APP_GID=10001
+RUN groupadd -r -g ${APP_GID} app \
+    && useradd -r -u ${APP_UID} -g app -d /app -s /usr/sbin/nologin app \
+    && mkdir -p /data \
+    && chown -R app:app /data
+
 WORKDIR /app
 COPY --from=backend-deps /opt/venv /opt/venv
 COPY backend/ /app/backend/
 COPY --from=frontend /build/frontend/dist /app/frontend/dist
 
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod 755 /entrypoint.sh
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"
+    CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.getenv(\"PORT\", os.getenv(\"APP_PORT\", \"8080\"))}/healthz', timeout=3)"
 
 # Do not trust forwarded client headers by default. Configure a trusted
 # reverse proxy explicitly if the deployment needs the original client IP.
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8080"]
+ENTRYPOINT ["/entrypoint.sh"]

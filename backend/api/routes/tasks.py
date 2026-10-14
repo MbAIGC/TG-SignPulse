@@ -150,17 +150,17 @@ async def task_logs_ws(
     try:
         auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=10)
     except Exception:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        await websocket.close(code=4401)
         return
 
     try:
         token = (auth_msg or {}).get("token") if isinstance(auth_msg, dict) else None
         user = verify_token(token, db) if token else None
         if not user:
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            await websocket.close(code=4401)
             return
     except Exception:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        await websocket.close(code=4401)
         return
 
     last_idx = 0

@@ -286,6 +286,27 @@ def _read_positive_int_env(name: str, default: int, minimum: int = 1) -> int:
         return default
 
 
+# 差异同步（GetDifference/GetChannelDifference）的重试预算。
+# 这些请求失败会直接表现为“签到收不到回复”，因此给足重试次数与等待上限。
+_DIFFERENCE_MAX_RETRIES = 5
+_DIFFERENCE_MAX_WAIT = 60.0
+
+
+def _difference_fallback_response(query):
+    """差异同步彻底失败时的兜底响应。
+
+    注意：返回空差异会让 SDK 认为已同步到 query.pts，该区间的消息不会再补回，
+    属于最后手段；调用方必须留下 ERROR 日志，便于排查漏消息。
+    """
+    if isinstance(query, raw.functions.updates.GetChannelDifference):
+        from pyrogram.raw.types.updates import ChannelDifferenceEmpty
+
+        return ChannelDifferenceEmpty(pts=query.pts, timeout=0, final=True)
+    from pyrogram.raw.types.updates import DifferenceEmpty
+
+    return DifferenceEmpty(date=getattr(query, "date", 0), seq=getattr(query, "pts", 0))
+
+
 async def _patched_invoke(self, query, *args, **kwargs):
     if isinstance(
         query,
@@ -313,7 +334,7 @@ async def _patched_invoke(self, query, *args, **kwargs):
         kwargs.setdefault("timeout", 5.0)
 
         async with _get_channel_diff_semaphore:
-            max_retries = 2
+            max_retries = _DIFFERENCE_MAX_RETRIES
             base_delay = 1.0
             for attempt in range(max_retries + 1):
                 try:
@@ -327,33 +348,47 @@ async def _patched_invoke(self, query, *args, **kwargs):
                         or "flood" in err_str
                         or "network" in err_str
                     ):
+                        flood_wait = 0
+                        if "flood" in err_str:
+                            try:
+                                flood_wait = int(getattr(e, "value", 0) or 0)
+                            except (TypeError, ValueError):
+                                flood_wait = 0
+                        # 遵守 Telegram 的限流等待：宁可放弃本次同步，也不缩短
+                        # 等待时间重试（那会招致更严厉的限流）。
+                        if flood_wait > _DIFFERENCE_MAX_WAIT:
+                            logger.error(
+                                "%s 需要等待 %ss 限流，超过上限 %.0fs，放弃本次同步",
+                                type(query).__name__,
+                                flood_wait,
+                                _DIFFERENCE_MAX_WAIT,
+                            )
+                            return _difference_fallback_response(query)
+
                         if attempt < max_retries:
                             delay = base_delay * (2**attempt) + random.uniform(0, 1)
-                            if "flood" in err_str and hasattr(e, "value"):
-                                delay = min(
-                                    e.value, 3.0
-                                )  # Wait for a shorter time, max 3 seconds
+                            if flood_wait:
+                                delay = max(delay, float(flood_wait))
+                            delay = min(delay, _DIFFERENCE_MAX_WAIT)
+                            logger.warning(
+                                "%s 第 %s/%s 次同步失败，%.1fs 后重试: %s",
+                                type(query).__name__,
+                                attempt + 1,
+                                max_retries,
+                                delay,
+                                e,
+                            )
                             await asyncio.sleep(delay)
                             continue
 
-                        logger.warning(
-                            f"Drop updates for {type(query).__name__} due to error: {e}"
+                        logger.error(
+                            "%s 重试 %s 次仍失败，跳过该区间的消息同步（可能丢失消息）: %s",
+                            type(query).__name__,
+                            max_retries,
+                            e,
                         )
+                        return _difference_fallback_response(query)
 
-                        if isinstance(
-                            query, raw.functions.updates.GetChannelDifference
-                        ):
-                            from pyrogram.raw.types.updates import (
-                                ChannelDifferenceEmpty,
-                            )
-
-                            return ChannelDifferenceEmpty(
-                                pts=query.pts, timeout=0, final=True
-                            )
-                        elif isinstance(query, raw.functions.updates.GetDifference):
-                            from pyrogram.raw.types.updates import DifferenceEmpty
-
-                            return DifferenceEmpty(date=query.date, seq=query.pts)
                     raise
     return await _original_invoke(self, query, *args, **kwargs)
 
@@ -671,7 +706,8 @@ class Client(SafeGetForumTopics, BaseClient):
                 except Exception:
                     pass
                 try:
-                    await self.stop()
+                    # shield：外层被取消时也要把连接关干净，避免留下半关闭的客户端
+                    await asyncio.shield(self.stop())
                 except Exception:
                     pass
                 # Remove from cache when no longer in use to prevent memory growth
@@ -838,16 +874,20 @@ async def close_client_by_name(name: str, workdir: Union[str, pathlib.Path] = ".
                 pass
             try:
                 if getattr(client, "is_connected", False):
-                    await client.stop()
+                    # shield：调用方被取消/超时也不能中断关闭，否则连接会半关闭
+                    await asyncio.shield(client.stop())
             except Exception as e:
                 logger.warning(f"Error stopping client {name}: {e}")
             finally:
-                _CLIENT_INSTANCES.pop(key, None)
+                # 只摘除自己负责的那个实例，避免误删可能的替代实例
+                if _CLIENT_INSTANCES.get(key) is client:
+                    _CLIENT_INSTANCES.pop(key, None)
 
-        if key in _CLIENT_ASYNC_LOCKS:
-            _CLIENT_ASYNC_LOCKS.pop(key, None)
-        if key in _CLIENT_REFS:
-            _CLIENT_REFS.pop(key, None)
+        if _CLIENT_INSTANCES.get(key) is None:
+            if key in _CLIENT_ASYNC_LOCKS:
+                _CLIENT_ASYNC_LOCKS.pop(key, None)
+            if key in _CLIENT_REFS:
+                _CLIENT_REFS.pop(key, None)
 
     trim_memory()
 
@@ -2180,19 +2220,32 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         edited_handler_ref = None
 
         async def sign_once():
-            success_count = 0
+            # 任一目标会话失败都算本轮失败：只要还有会话没签到成功，就不能把当天
+            # 记为已完成，否则漏签会被后续 need_sign 判定为“今天已签”。
+            failures: list[tuple[SignChatV3, Exception]] = []
             for chat in config.chats:
+                # 目标会话无法解析（如 @用户名 不存在）沿用既有语义：跳过该会话，
+                # 不因此判定整轮失败。
                 try:
                     route_key = await self.resolve_chat_route_key(chat)
-                    self.context.sign_chats[route_key].append(chat)
-                    await self.sign_a_chat(chat)
-                    success_count += 1
-                except errors.RPCError as _e:
+                except Exception as exc:
                     self.log(
-                        f"签到失败: {_e} (chat_id={chat.chat_id})",
+                        f"跳过无法解析的会话: {exc} (chat_id={chat.chat_id})",
                         level="WARNING",
                     )
-                    logger.warning(_e, exc_info=True)
+                    logger.warning(exc, exc_info=True)
+                    continue
+
+                try:
+                    self.context.sign_chats[route_key].append(chat)
+                    await self.sign_a_chat(chat)
+                except Exception as exc:
+                    failures.append((chat, exc))
+                    self.log(
+                        f"签到失败: {exc} (chat_id={chat.chat_id})",
+                        level="WARNING",
+                    )
+                    logger.warning(exc, exc_info=True)
                     continue
 
                 # 只清理当前路由的消息缓存，避免误清其他 chat 的目标消息
@@ -2200,8 +2253,21 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 self.context.chat_messages[route_key].clear()
                 await asyncio.sleep(config.sign_interval)
 
-            if success_count == 0 and len(config.chats) > 0:
-                raise RuntimeError("所有会话均执行失败（详细请看运行日志）")
+            if failures:
+                details = "; ".join(
+                    f"chat_id={chat.chat_id}: {type(exc).__name__}: {exc}"
+                    for chat, exc in failures
+                )
+                message = (
+                    f"{len(failures)}/{len(config.chats)} 个会话执行失败: {details}"
+                )
+                # 不用 OSError 作为异常类型：_normal_run 会把 OSError 当成可恢复错误
+                # 并每 30 秒重跑一轮，--once 模式下会变成死循环。改为把网络异常挂到
+                # __cause__，供上层执行器识别可重试的瞬时故障。
+                network_error = next(
+                    (exc for _, exc in failures if isinstance(exc, OSError)), None
+                )
+                raise RuntimeError(message) from (network_error or failures[0][1])
 
             self.persist_sign_record(sign_record, str(now.date()), now.isoformat())
 

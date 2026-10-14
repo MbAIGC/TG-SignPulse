@@ -382,6 +382,7 @@ class GlobalSettingsRequest(BaseModel):
     telegram_bot_notify_enabled: bool = False
     telegram_bot_login_notify_enabled: bool = False
     telegram_bot_task_failure_enabled: bool = True
+    telegram_bot_task_success_enabled: bool = False
     telegram_bot_token: Optional[str] = None
     telegram_bot_chat_id: Optional[str] = None
     telegram_bot_message_thread_id: Optional[int] = None
@@ -396,6 +397,7 @@ class GlobalSettingsResponse(BaseModel):
     telegram_bot_notify_enabled: bool = False
     telegram_bot_login_notify_enabled: bool = False
     telegram_bot_task_failure_enabled: bool = True
+    telegram_bot_task_success_enabled: bool = False
     telegram_bot_token: Optional[str] = None
     telegram_bot_chat_id: Optional[str] = None
     telegram_bot_message_thread_id: Optional[int] = None
@@ -414,6 +416,49 @@ def get_global_settings(current_user: User = Depends(get_current_user)):
         )
 
 
+class TelegramBotTestRequest(BaseModel):
+    bot_token: Optional[str] = None
+    chat_id: Optional[str] = None
+    message_thread_id: Optional[int] = None
+
+
+@router.post("/telegram/test")
+async def test_telegram_bot(
+    request: TelegramBotTestRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """发送一条测试消息，验证 Bot Token / Chat ID / 代理是否可用。"""
+    cfg = get_config_service().get_global_settings()
+    bot_token = (request.bot_token or cfg.get("telegram_bot_token") or "").strip()
+    chat_id = (request.chat_id or cfg.get("telegram_bot_chat_id") or "").strip()
+    thread_id = request.message_thread_id
+    if thread_id is None:
+        thread_id = cfg.get("telegram_bot_message_thread_id")
+    if not bot_token or not chat_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请先填写 Bot Token 与通知 Chat ID",
+        )
+
+    from backend.services.push_notifications import send_telegram_bot_message
+
+    try:
+        await send_telegram_bot_message(
+            bot_token=bot_token,
+            chat_id=chat_id,
+            text="TG-SignPulse 测试消息：通知配置正常。",
+            message_thread_id=thread_id,
+        )
+    except Exception as exc:
+        logger.warning("发送测试通知失败: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"测试消息发送失败: {exc}",
+        ) from exc
+
+    return {"success": True, "message": "测试消息已发送"}
+
+
 @router.post("/settings", response_model=AIConfigSaveResponse)
 async def save_global_settings(
     request: GlobalSettingsRequest, current_user: User = Depends(get_current_user)
@@ -427,6 +472,7 @@ async def save_global_settings(
             "telegram_bot_notify_enabled": request.telegram_bot_notify_enabled,
             "telegram_bot_login_notify_enabled": request.telegram_bot_login_notify_enabled,
             "telegram_bot_task_failure_enabled": request.telegram_bot_task_failure_enabled,
+            "telegram_bot_task_success_enabled": request.telegram_bot_task_success_enabled,
             "telegram_bot_token": request.telegram_bot_token,
             "telegram_bot_chat_id": request.telegram_bot_chat_id,
             "telegram_bot_message_thread_id": request.telegram_bot_message_thread_id,

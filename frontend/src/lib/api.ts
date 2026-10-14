@@ -2,6 +2,22 @@ import type { Task, TaskLog, TokenResponse } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 
+// 读取类请求 30s、写入类请求 180s（长任务启动等写操作可能较慢）
+const READ_TIMEOUT_MS = 30_000;
+const WRITE_TIMEOUT_MS = 180_000;
+
+interface RequestOptions extends RequestInit {
+  /** 覆盖默认超时（毫秒） */
+  timeoutMs?: number;
+}
+
+const defaultTimeoutFor = (method?: string): number => {
+  const normalized = (method || "GET").toUpperCase();
+  return normalized === "GET" || normalized === "HEAD"
+    ? READ_TIMEOUT_MS
+    : WRITE_TIMEOUT_MS;
+};
+
 const toRecord = (headers?: HeadersInit): Record<string, string> => {
   if (!headers) return {};
   if (headers instanceof Headers) {
@@ -15,7 +31,7 @@ const toRecord = (headers?: HeadersInit): Record<string, string> => {
 
 async function request<T>(
   path: string,
-  options: RequestInit = {},
+  options: RequestOptions = {},
   token?: string | null
 ): Promise<T> {
   const mergedHeaders: Record<string, string> = {
@@ -25,11 +41,32 @@ async function request<T>(
   if (token) {
     mergedHeaders["Authorization"] = `Bearer ${token}`;
   }
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: mergedHeaders,
-    cache: "no-store", // 禁用缓存，确保获取最新数据
-  });
+
+  const { timeoutMs, ...fetchOptions } = options;
+  const effectiveTimeout = timeoutMs ?? defaultTimeoutFor(options.method);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), effectiveTimeout);
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      ...fetchOptions,
+      headers: mergedHeaders,
+      cache: "no-store", // 禁用缓存，确保获取最新数据
+      signal: controller.signal,
+    });
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      const timeoutError: any = new Error(
+        `请求超时（${Math.round(effectiveTimeout / 1000)} 秒），请稍后重试`
+      );
+      timeoutError.code = "REQUEST_TIMEOUT";
+      throw timeoutError;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     // 尝试解析 JSON 错误响应
     let errorMessage = "请求失败";
@@ -503,10 +540,21 @@ export interface GlobalSettings {
   telegram_bot_notify_enabled?: boolean;
   telegram_bot_login_notify_enabled?: boolean;
   telegram_bot_task_failure_enabled?: boolean;
+  telegram_bot_task_success_enabled?: boolean;
   telegram_bot_token?: string | null;
   telegram_bot_chat_id?: string | null;
   telegram_bot_message_thread_id?: number | null;
 }
+
+export const testTelegramBot = (
+  token: string,
+  payload: { bot_token?: string | null; chat_id?: string | null; message_thread_id?: number | null },
+) =>
+  request<{ success: boolean; message: string }>(
+    "/config/telegram/test",
+    { method: "POST", body: JSON.stringify(payload) },
+    token,
+  );
 
 export const getGlobalSettings = (token: string) =>
   request<GlobalSettings>("/config/settings", {}, token);
@@ -840,6 +888,55 @@ export interface SignTaskRunStatus {
   started_at?: string | null;
   finished_at?: string | null;
 }
+
+export interface DailyStatItem {
+  date: string;
+  success: number;
+  failed: number;
+}
+
+export interface DailyStats {
+  days: DailyStatItem[];
+  success: number;
+  failed: number;
+  total: number;
+  success_rate: number | null;
+}
+
+export const getOverallDailyStats = (token: string, days = 30) =>
+  request<DailyStats>(`/sign-tasks/stats/overall?days=${days}`, {}, token);
+
+export const getSignTaskDailyStats = (
+  token: string,
+  name: string,
+  accountName?: string,
+  days = 30,
+) => {
+  const query = accountName && accountName !== '*'
+    ? `&account_name=${encodeURIComponent(accountName)}`
+    : "";
+  return request<DailyStats>(
+    `/sign-tasks/${encodeURIComponent(name)}/stats?days=${days}${query}`,
+    {},
+    token,
+  );
+};
+
+export const setSignTaskEnabled = (
+  token: string,
+  name: string,
+  enabled: boolean,
+  accountName?: string,
+) => {
+  const query = accountName && accountName !== '*'
+    ? `?account_name=${encodeURIComponent(accountName)}`
+    : "";
+  return request(
+    `/sign-tasks/${encodeURIComponent(name)}/enabled${query}`,
+    { method: "PATCH", body: JSON.stringify({ enabled }) },
+    token,
+  );
+};
 
 export const startSignTaskRun = (token: string, name: string, accountName: string) =>
   request<SignTaskRunStatus>(`/sign-tasks/${encodeURIComponent(name)}/run/start?account_name=${encodeURIComponent(accountName)}`, {

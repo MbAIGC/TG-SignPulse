@@ -16,12 +16,16 @@ from backend.core.auth import get_current_user
 from backend.core.rate_limit import compose_rate_limit_key, get_rate_limiter
 from backend.models.user import User
 from backend.services.telegram import get_telegram_service
+from backend.utils.account_locks import get_account_lock
 from backend.utils.names import validate_storage_name
 from backend.utils.task_logs import extract_last_target_message
 
 router = APIRouter()
 logger = logging.getLogger("backend.qr_login")
 rate_limiter = get_rate_limiter()
+
+# 删除账号时等待账号锁的最长时间：超时返回 409，而不是让请求一直挂起
+_DELETE_LOCK_WAIT_SECONDS = 5.0
 
 
 def _apply_rate_limit(
@@ -483,6 +487,41 @@ def list_accounts(current_user: User = Depends(get_current_user)):
         )
 
 
+class AccountHealthCheckResponse(BaseModel):
+    """账号健康巡检结果。"""
+
+    success: bool
+    message: str
+    checked: int = 0
+    invalid: list[str] = []
+    skipped: list[str] = []
+
+
+@router.post("/health-check", response_model=AccountHealthCheckResponse)
+async def health_check_accounts(current_user: User = Depends(get_current_user)):
+    """手动触发一次账号健康巡检（与每日 09:00 定时巡检同一逻辑）。
+
+    失效账号会写入账号状态并触发一次通知（与任务失败路径共用去重）。
+    """
+    from backend.services.sign_tasks import get_sign_task_service
+
+    try:
+        summary = await get_sign_task_service().health_check_accounts()
+    except Exception:
+        logger.exception("账号巡检失败")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="账号巡检失败",
+        )
+    return AccountHealthCheckResponse(
+        success=True,
+        message="巡检完成",
+        checked=int(summary.get("checked") or 0),
+        invalid=list(summary.get("invalid") or []),
+        skipped=list(summary.get("skipped") or []),
+    )
+
+
 @router.post("/status/check", response_model=AccountStatusCheckResponse)
 async def check_accounts_status(
     request: AccountStatusCheckRequest, current_user: User = Depends(get_current_user)
@@ -582,7 +621,20 @@ async def delete_account(
     """
     try:
         account_name = validate_storage_name(account_name, field_name="account_name")
-        success = await get_telegram_service().delete_account(account_name)
+        # 与正在执行的签到任务互斥：任务还在使用 session 时删除会破坏运行状态。
+        # 只等待有限时间，避免接口长时间挂起（任务结束后可重试）。
+        lock = get_account_lock(account_name)
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=_DELETE_LOCK_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"账号 {account_name} 正在执行任务，请稍后再删除",
+            )
+        try:
+            success = await get_telegram_service().delete_account(account_name)
+        finally:
+            lock.release()
 
         if success:
             return DeleteAccountResponse(

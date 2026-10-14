@@ -125,3 +125,17 @@ class RunStateStore:
         if row is None:
             return None
         return self._row_to_dict(row)
+
+    def delete_older_than(self, before_iso: str) -> int:
+        """删除 started_at 早于给定时间的运行状态，返回删除行数。
+
+        这张表只增不删会随运行次数无限增长，且启动时要按
+        (task_name, account_name) 做全表聚合，必须定期清理。
+        """
+        conn = self._conn()
+        cursor = conn.execute(
+            "DELETE FROM task_runs WHERE started_at < ?",
+            (before_iso,),
+        )
+        conn.commit()
+        return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0

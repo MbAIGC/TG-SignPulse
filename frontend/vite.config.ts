@@ -11,6 +11,8 @@ export default defineConfig({
       manifest: {
         name: 'TG-SignPulse',
         short_name: 'SignPulse',
+        lang: 'zh-CN',
+        id: '/',
         description: 'Telegram Automation Panel',
         theme_color: '#111827',
         background_color: '#f9fafb',
@@ -26,6 +28,12 @@ export default defineConfig({
             src: '/pwa-512x512.png',
             sizes: '512x512',
             type: 'image/png'
+          },
+          {
+            src: '/pwa-512x512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'maskable'
           }
         ]
       },

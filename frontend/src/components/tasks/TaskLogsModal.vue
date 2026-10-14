@@ -24,7 +24,13 @@ const loading = ref(false)
 const isRunning = ref(false)
 let ws: WebSocket | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 const logContainer = ref<HTMLElement | null>(null)
+
+// 断线续传状态：游标由服务端随每帧下发，重连时带回实现增量续传
+const MAX_WS_RECONNECT = 5
+let wsAttempts = 0
+let lastCursor = { task: 0, monitor: 0 }
 
 const getTaskAccountName = (task: any): string => {
   if (!task) return ''
@@ -63,10 +69,17 @@ const connectWebSocket = () => {
   const accountName = getTaskAccountName(props.task) || ''
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const wsHost = window.location.host
-  // token 不放入 URL（防止代理日志泄密），改为连接建立后首帧发送
-  const wsUrl = `${wsProtocol}//${wsHost}/api/sign-tasks/ws/${taskName}?account_name=${encodeURIComponent(accountName)}`
+  // token 不放入 URL（防止代理日志泄密），改为连接建立后首帧发送；
+  // 游标放在 URL 上用于断线续传（不含敏感信息）。
+  const cursorQuery =
+    lastCursor.task > 0 || lastCursor.monitor > 0
+      ? `&task_cursor=${lastCursor.task}&monitor_cursor=${lastCursor.monitor}`
+      : ''
+  const wsUrl = `${wsProtocol}//${wsHost}/api/sign-tasks/ws/${taskName}?account_name=${encodeURIComponent(accountName)}${cursorQuery}`
 
-  realtimeLogs.value = []
+  if (realtimeLogs.value.length === 0 && lastCursor.task === 0 && lastCursor.monitor === 0) {
+    realtimeLogs.value = []
+  }
   // Only show "running" state when user just clicked Run (runAccount provided)
   // For "View Logs" mode, isRunning will be set true only when WS confirms task is actually running
   isRunning.value = !!props.runAccount
@@ -74,14 +87,12 @@ const connectWebSocket = () => {
   try {
     ws = new WebSocket(wsUrl)
   } catch {
-    if (props.runAccount) {
-      isRunning.value = false
-      startPolling()
-    }
+    scheduleReconnect()
     return
   }
 
   ws.onopen = () => {
+    wsAttempts = 0
     // 首帧携带 token 完成认证
     try {
       ws?.send(JSON.stringify({ token }))
@@ -92,6 +103,12 @@ const connectWebSocket = () => {
       const msg = JSON.parse(event.data)
       if (msg.type === 'logs' && Array.isArray(msg.data)) {
         realtimeLogs.value.push(...msg.data)
+        if (msg.cursor && typeof msg.cursor === 'object') {
+          lastCursor = {
+            task: Number(msg.cursor.task) || 0,
+            monitor: Number(msg.cursor.monitor) || 0,
+          }
+        }
         isRunning.value = msg.is_running !== false
         nextTick(() => {
           if (logContainer.value) {
@@ -106,17 +123,43 @@ const connectWebSocket = () => {
     } catch {}
   }
   ws.onerror = () => {
-    if (props.runAccount) {
-      isRunning.value = true
-      startPolling()
-    }
+    // onclose 里统一处理重连/轮询，避免重复调度
   }
-  ws.onclose = () => {
-    if (isRunning.value && props.runAccount) {
-      // Unexpected close while running, try polling
-      startPolling()
-    }
+  ws.onclose = (event) => {
     ws = null
+    if (event?.code === 4401) {
+      // 认证失败：清 token 回登录页，不要当成网络抖动重连
+      stopPolling()
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('tg-signer-token')
+        window.location.href = '/'
+      }
+      return
+    }
+    scheduleReconnect()
+  }
+}
+
+const scheduleReconnect = () => {
+  if (pollTimer) return
+  if (wsAttempts >= MAX_WS_RECONNECT) {
+    // 重连次数用尽：退化为轮询，保证还能看到日志
+    startPolling()
+    return
+  }
+  const delay = Math.min(1000 * 2 ** wsAttempts, 15000)
+  wsAttempts += 1
+  if (reconnectTimer) clearTimeout(reconnectTimer)
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    if (props.isOpen && props.runAccount) connectWebSocket()
+  }, delay)
+}
+
+const stopPolling = () => {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
   }
 }
 
@@ -164,20 +207,25 @@ const disconnectWebSocket = () => {
     ws.close()
     ws = null
   }
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
   }
+  stopPolling()
   isRunning.value = false
 }
 
 watch(() => props.isOpen, (newVal) => {
   if (newVal) {
+    // 每次打开都从零开始，避免上次运行的游标串到本次
+    lastCursor = { task: 0, monitor: 0 }
+    wsAttempts = 0
     // For "View Logs" mode (no runAccount): only show history, no realtime
     // For "Run" mode (runAccount set): only show realtime, history loads after task done
     if (props.runAccount) {
       // Just clicked Run - clear logs and connect WebSocket for live updates
       logs.value = []
+      realtimeLogs.value = []
       connectWebSocket()
     } else {
       // Just viewing - load history only

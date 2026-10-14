@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Play, FileText, Edit2, Trash2, Plus, QrCode, Phone, Zap } from '@lucide/vue'
+import { Play, FileText, Edit2, Trash2, Plus, QrCode, Phone, Zap, AlertTriangle } from '@lucide/vue'
 import { listAccounts, deleteAccount, checkAccountsStatus } from '../lib/api'
 import { useI18n } from '../composables/useI18n'
+import { useToast } from '../composables/useToast'
+import { confirmDialog } from '../composables/useConfirm'
 import AddAccountModal from '../components/accounts/AddAccountModal.vue'
 import EditAccountModal from '../components/accounts/EditAccountModal.vue'
 
 const router = useRouter()
 const { t } = useI18n()
+const toast = useToast()
 const accounts = ref<any[]>([])
 const pageLoading = ref(true)
 const showAddModal = ref(false)
@@ -47,6 +50,7 @@ const loadAccounts = async () => {
         name: acc.name,
         remark: acc.remark,
         status: uiStatus,
+        needsRelogin: Boolean(acc.needs_relogin || acc.status === 'invalid'),
         message: message,
         avatarUrl: '',
         avatarLoaded: false,
@@ -85,17 +89,29 @@ onMounted(() => {
 })
 
 const handleDelete = async (name: string) => {
-  if (!confirm(`${t('accounts.deleteConfirm')} ${name} ?`)) return
+  const confirmed = await confirmDialog(`${t('accounts.deleteConfirm')} ${name} ?`, {
+    danger: true,
+  })
+  if (!confirmed) return
   const token = localStorage.getItem('tg-signer-token') || ''
   try {
     await deleteAccount(token, name)
     await loadAccounts()
   } catch (e) {
-    alert(t('accounts.deleteFailed'))
+    toast.error(t('accounts.deleteFailed'))
   }
 }
 
 const checkingAccount = ref('')
+
+// 失效账号提醒卡：一眼看到需要重新登录的账号
+const invalidAccounts = computed(() =>
+  accounts.value.filter((acc: any) => acc.needsRelogin)
+)
+const handleReloginFirst = () => {
+  const first = invalidAccounts.value[0]
+  if (first) handleRelogin(first.name)
+}
 
 const handleCheck = async (name: string) => {
   const token = localStorage.getItem('tg-signer-token') || ''
@@ -107,13 +123,13 @@ const handleCheck = async (name: string) => {
     const result = res.results?.[0]
     if (result) {
       if (result.ok) {
-        alert(`✅ ${name}: ${t('accounts.checkOk')}`)
+        toast.success(`${name}: ${t('accounts.checkOk')}`)
       } else {
-        alert(`❌ ${name}: ${result.message || t('accounts.loginExpired')}`)
+        toast.error(`${name}: ${result.message || t('accounts.loginExpired')}`)
       }
     }
   } catch (e) {
-    alert(t('accounts.checkFailed'))
+    toast.error(t('accounts.checkFailed'))
   } finally {
     checkingAccount.value = ''
   }
@@ -154,6 +170,30 @@ const goTasks = (name: string) => {
     <!-- Page Loading -->
     <div v-if="pageLoading" class="flex items-center justify-center py-20">
       <svg class="animate-spin w-6 h-6 text-gray-400" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+    </div>
+
+    <!-- 失效账号提醒 -->
+    <div
+      v-else-if="invalidAccounts.length > 0"
+      class="mb-5 flex items-start sm:items-center gap-3 rounded-xl border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-500/10 p-4"
+    >
+      <div class="w-9 h-9 shrink-0 rounded-lg bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 flex items-center justify-center">
+        <AlertTriangle class="w-5 h-5" stroke-width="1.5" />
+      </div>
+      <div class="flex-1 min-w-0">
+        <p class="text-sm font-medium text-amber-900 dark:text-amber-200">
+          {{ invalidAccounts.length }} {{ t('accounts.reloginNeeded') }}
+        </p>
+        <p class="mt-0.5 text-xs text-amber-800/80 dark:text-amber-300/80 break-all">
+          {{ invalidAccounts.map((acc: any) => acc.name).join('、') }}
+        </p>
+      </div>
+      <button
+        @click="handleReloginFirst"
+        class="shrink-0 px-3 py-1.5 text-xs rounded-full bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+      >
+        {{ t('accounts.relogin') }}
+      </button>
     </div>
 
     <!-- Empty State -->

@@ -319,22 +319,8 @@ def disable_totp(
     return DisableTOTPResponse(success=True, message="两步验证已禁用")
 
 
-class ResetUserTOTPRequest(BaseModel):
-    password: str
-
-
-@router.post("/totp/reset", response_model=DisableTOTPResponse)
-def reset_totp(
-    request: ResetUserTOTPRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    if not verify_password(request.password, current_user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="密码错误",
-        )
-    current_user.totp_secret = None
-    db.commit()
-    clear_pending_totp_secret(current_user.id)
-    return DisableTOTPResponse(success=True, message="两步验证已重置")
+# 注意：曾存在 POST /totp/reset（仅凭登录态 + 密码即可关闭两步验证）。
+# 该路径会绕过 TOTP 二次校验，等于让“会话令牌 + 密码”即可永久降级 2FA，
+# 已移除。忘记验证器时请使用服务器终端命令：
+#   python -m backend.cli reset-totp <用户名>
+# 或配置 APP_EMERGENCY_RESET_KEY 后调用 POST /api/auth/reset-totp。

@@ -2,15 +2,21 @@
 import { ref, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Play, FileText, Edit2, Trash2, Plus, Radio, Clock, Shuffle } from '@lucide/vue'
-import { listSignTasks, deleteSignTask, startSignTaskRun, listAccounts } from '../lib/api' 
+import { listSignTasks, deleteSignTask, startSignTaskRun, setSignTaskEnabled, listAccounts, getSignTaskDailyStats } from '../lib/api' 
 import { useI18n } from '../composables/useI18n'
+import { useToast } from '../composables/useToast'
+import { confirmDialog } from '../composables/useConfirm'
 import AddTaskModal from '../components/tasks/AddTaskModal.vue'
 import EditTaskModal from '../components/tasks/EditTaskModal.vue'
 import TaskLogsModal from '../components/tasks/TaskLogsModal.vue'
+import TaskPulse from '../components/TaskPulse.vue'
 
 const route = useRoute()
-const { t } = useI18n()
+const { t, locale: lang } = useI18n()
+const toast = useToast()
 const tasks = ref<any[]>([])
+// 每个任务最近 30 天的执行状态（任务行状态条）
+const taskPulses = ref<Record<string, Array<{ date: string; success: number; failed: number }>>>({})
 const pageLoading = ref(true)
 const showAddModal = ref(false)
 const showEditModal = ref(false)
@@ -24,14 +30,31 @@ const logsRunId = ref<string>('')
 const runMenuTask = ref<any>(null)
 const runMenuAccounts = ref<string[]>([])
 const allAccounts = ref<string[]>([])
+// 需要重新登录的账号：任务跑不起来时给出可见提示，而不是等失败
+const invalidAccountNames = ref<Set<string>>(new Set())
 
 const loadAllAccounts = async () => {
   const token = localStorage.getItem('tg-signer-token') || ''
   if (!token) return
   try {
     const res = await listAccounts(token)
-    allAccounts.value = (res.accounts || []).map((a: any) => a.name)
+    const items = res.accounts || []
+    allAccounts.value = items.map((a: any) => a.name)
+    invalidAccountNames.value = new Set(
+      items
+        .filter((a: any) => a.needs_relogin || a.status === 'invalid')
+        .map((a: any) => a.name)
+    )
   } catch { }
+}
+
+/** 返回该任务下处于“需重新登录”状态的账号名（没有则空字符串） */
+const blockedAccountFor = (task: any): string => {
+  const accounts = getTaskRealAccounts(task)
+  for (const name of accounts) {
+    if (invalidAccountNames.value.has(name)) return name
+  }
+  return ''
 }
 
 const formatDate = (dateStr: string) => {
@@ -105,11 +128,14 @@ const loadTasks = async () => {
         lastRunSuccess,
         modeIcon,
         isListenMode: task.execution_mode === 'listen',
+        enabled: task.enabled !== false,
         chatAvatarUrl: '',
         chatName: firstChat ? (firstChat.name || `Chat ${firstChat.chat_id}`) : '',
         raw: task
       }
     })
+
+    void loadTaskPulses()
 
     // Load chat avatars - prefer chat.source_account (the account that selected the chat),
     // fall back to first real account from task's account list
@@ -194,14 +220,50 @@ watch(() => route.query.account, () => {
 })
 
 const handleDelete = async (task: any) => {
-  if (!confirm(`${t('tasks.deleteConfirm')} ${task.name} ?`)) return
+  const confirmed = await confirmDialog(`${t('tasks.deleteConfirm')} ${task.name} ?`, {
+    danger: true,
+  })
+  if (!confirmed) return
   const token = localStorage.getItem('tg-signer-token') || ''
   try {
     const accountName = getTaskAccountName(task.raw) || undefined
     await deleteSignTask(token, task.name, accountName)
     await loadTasks()
   } catch (e: any) {
-    alert(`${t('tasks.deleteFailed')}: ${e.message || t('tasks.unknownError')}`)
+    toast.error(`${t('tasks.deleteFailed')}: ${e.message || t('tasks.unknownError')}`)
+  }
+}
+
+const loadTaskPulses = async () => {
+  const token = localStorage.getItem('tg-signer-token') || ''
+  if (!token) return
+  const entries = await Promise.all(
+    tasks.value.map(async (task: any) => {
+      try {
+        const stats = await getSignTaskDailyStats(
+          token,
+          task.name,
+          getTaskAccountName(task.raw) || undefined,
+          30,
+        )
+        return [task.name, stats.days || []] as const
+      } catch {
+        return [task.name, []] as const
+      }
+    }),
+  )
+  taskPulses.value = Object.fromEntries(entries)
+}
+
+const handleToggleEnabled = async (task: any) => {
+  const token = localStorage.getItem('tg-signer-token') || ''
+  const nextEnabled = !task.enabled
+  try {
+    await setSignTaskEnabled(token, task.name, nextEnabled, getTaskAccountName(task.raw))
+    await loadTasks()
+    toast.success(nextEnabled ? t('tasks.enabledToast') : t('tasks.disabledToast'))
+  } catch (e: any) {
+    toast.error(`${t('tasks.toggleFailed')}: ${e.message || t('tasks.unknownError')}`)
   }
 }
 
@@ -238,7 +300,7 @@ const doRun = async (task: any, accountName: string) => {
     logsTask.value = task
     showLogsModal.value = true
   } catch(e: any) {
-    alert(`${t('tasks.triggerFailed')}: ${e.message}`)
+    toast.error(`${t('tasks.triggerFailed')}: ${e.message}`)
   }
 }
 
@@ -311,6 +373,22 @@ const openLogs = (task: any) => {
             <span class="px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 border border-blue-100 dark:border-blue-800/50 truncate" :title="task.scheduleMode">
               {{ task.scheduleMode }}
             </span>
+            <!-- 30 天执行状态条 -->
+            <TaskPulse
+              v-if="taskPulses[task.name]?.length"
+              :days="taskPulses[task.name]"
+              :height="18"
+              :locale="lang"
+              class="w-24 shrink-0"
+            />
+            <!-- 失效账号提示 -->
+            <span
+              v-if="blockedAccountFor(task)"
+              class="px-2 py-0.5 rounded text-xs bg-rose-50 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400 border border-rose-200 dark:border-rose-800/50 truncate"
+              :title="`${blockedAccountFor(task)} ${t('accounts.loginExpired')}`"
+            >
+              {{ t('accounts.loginExpired') }}
+            </span>
             <!-- Target badge -->
             <span class="px-2 py-0.5 rounded text-xs font-mono bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300 border border-gray-200 dark:border-gray-700/50 truncate" :title="task.targetStr">
               {{ task.targetStr }}
@@ -343,6 +421,14 @@ const openLogs = (task: any) => {
 
       <!-- Actions Area -->
       <div class="flex items-center justify-between sm:justify-end gap-2 sm:gap-1.5 mt-2 sm:mt-0 transition-opacity duration-200 shrink-0 sm:pl-4">
+        <button
+          @click.stop="handleToggleEnabled(task)"
+          class="flex justify-center items-center gap-1 px-2 py-1.5 rounded transition-colors text-xs shrink-0"
+          :class="task.enabled ? 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800' : 'text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20'"
+          :title="task.enabled ? t('tasks.disable') : t('tasks.enable')"
+        >
+          <span class="text-xs">{{ task.enabled ? t('tasks.disable') : t('tasks.enable') }}</span>
+        </button>
         <div class="relative flex-1 sm:flex-none" @click.stop>
           <button 
             @click="task.raw.execution_mode !== 'listen' && handleRun(task)" 

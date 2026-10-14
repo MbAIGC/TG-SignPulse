@@ -130,6 +130,7 @@ class SignTaskUpdate(BaseModel):
     notify_on_failure: Optional[bool] = Field(
         None, description="Failure notification switch"
     )
+    enabled: Optional[bool] = Field(None, description="Enable/disable schedule")
 
 
 class LastRunInfo(BaseModel):
@@ -345,6 +346,7 @@ async def update_sign_task(
             range_start=payload.range_start,
             range_end=payload.range_end,
             notify_on_failure=payload.notify_on_failure,
+            enabled=payload.enabled,
         )
 
         from backend.scheduler import sync_jobs
@@ -362,6 +364,53 @@ async def update_sign_task(
     except Exception:
         logger.exception("更新任务失败")
         raise HTTPException(status_code=500, detail="更新任务失败")
+
+
+class SignTaskEnabledUpdate(BaseModel):
+    enabled: bool = Field(..., description="Enable/disable schedule")
+
+
+@router.patch("/{task_name}/enabled", response_model=SignTaskOut)
+async def set_sign_task_enabled(
+    task_name: str,
+    payload: SignTaskEnabledUpdate,
+    account_name: Optional[str] = None,
+    current_user=Depends(get_current_user),
+):
+    """启用/停用签到任务：停用只停止调度，不删除配置与历史记录。"""
+    try:
+        service = get_sign_task_service()
+        effective_account = (
+            account_name if (account_name and account_name != "*") else None
+        )
+        existing = service.get_task(
+            task_name,
+            account_name=effective_account,
+            aggregate=effective_account is None,
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail=f"任务 {task_name} 不存在")
+
+        task = service.set_task_enabled(
+            task_name,
+            bool(payload.enabled),
+            account_name=effective_account,
+        )
+
+        from backend.scheduler import sync_jobs
+
+        await sync_jobs()
+        return task
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        ) from e
+    except Exception:
+        logger.exception("切换任务启用状态失败")
+        raise HTTPException(status_code=500, detail="切换任务启用状态失败")
 
 
 @router.delete("/{task_name}", status_code=status.HTTP_200_OK)
@@ -521,6 +570,53 @@ def get_sign_task_run_status(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(e),
         ) from e
+
+
+class DailyStatItem(BaseModel):
+    date: str
+    success: int = 0
+    failed: int = 0
+
+
+class DailyStatsResponse(BaseModel):
+    days: List[DailyStatItem]
+    success: int = 0
+    failed: int = 0
+    total: int = 0
+    success_rate: Optional[float] = None
+
+
+@router.get("/stats/overall", response_model=DailyStatsResponse)
+def get_overall_daily_stats(
+    days: int = Query(30, ge=7, le=90),
+    current_user=Depends(get_current_user),
+):
+    """全部任务的按天执行结果（首页整体脉搏）。"""
+    try:
+        return get_sign_task_service().get_daily_stats(days=days)
+    except Exception:
+        logger.exception("读取整体统计数据失败")
+        raise HTTPException(status_code=500, detail="读取统计数据失败")
+
+
+@router.get("/{task_name}/stats", response_model=DailyStatsResponse)
+def get_sign_task_daily_stats(
+    task_name: str,
+    account_name: Optional[str] = None,
+    days: int = Query(30, ge=7, le=90),
+    current_user=Depends(get_current_user),
+):
+    """单个任务的按天执行结果（任务行 30 天状态条）。"""
+    effective_account = account_name if (account_name and account_name != "*") else ""
+    try:
+        return get_sign_task_service().get_daily_stats(
+            task_name=task_name,
+            account_name=effective_account,
+            days=days,
+        )
+    except Exception:
+        logger.exception("读取任务统计数据失败")
+        raise HTTPException(status_code=500, detail="读取统计数据失败")
 
 
 @router.get("/{task_name}/logs", response_model=List[str])
@@ -723,62 +819,99 @@ async def sign_task_logs_ws(
     websocket: WebSocket,
     task_name: str,
     account_name: str | None = Query(None),
+    task_cursor: int = Query(0, ge=0),
+    monitor_cursor: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
     # 先接受连接，再读取首帧认证（token 不进 URL，防止代理日志泄密）
     await websocket.accept()
 
+    # 认证失败用 4401（私有区间）：前端据此清 token 回登录页，
+    # 而不是当成网络抖动无限重连。
     try:
         auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=10)
     except Exception:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        await websocket.close(code=4401)
         return
 
     try:
         token = (auth_msg or {}).get("token") if isinstance(auth_msg, dict) else None
         user = verify_token(token, db) if token else None
         if not user:
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            await websocket.close(code=4401)
             return
     except Exception:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        await websocket.close(code=4401)
         return
 
     # Resolve empty/wildcard account_name to None for broader matching
     effective_account = account_name if (account_name and account_name != "*") else None
 
-    last_idx = 0
+    # 光标 = (任务日志累计序号, 监听日志累计序号)。日志缓冲区会截断，
+    # 不能靠 len() 判断是否有新日志，否则缓冲区打满后推送会永久停住。
+    # 携带光标的连接表示断线重连：直接从断点续传，不重发全量快照。
+    last_cursor = (max(task_cursor, 0), max(monitor_cursor, 0))
+    resuming = last_cursor != (0, 0)
     connected_at = asyncio.get_running_loop().time()
     seen_activity = False
-    sent_snapshot = False
+    sent_snapshot = resuming
+    service = get_sign_task_service()
     try:
         while True:
-            active_logs = get_sign_task_service().get_active_logs(
+            (
+                active_logs,
+                task_total,
+                monitor_total,
+            ) = service.get_active_logs_with_cursor(
                 task_name,
                 account_name=effective_account,
             )
-            is_running = get_sign_task_service().is_task_running(
+            is_running = service.is_task_running(
                 task_name,
                 account_name=effective_account,
             )
             if is_running or bool(active_logs):
                 seen_activity = True
 
-            if len(active_logs) > last_idx or not sent_snapshot:
-                new_logs = active_logs[last_idx:]
+            cursor = (task_total, monitor_total)
+            new_count = (task_total - last_cursor[0]) + (monitor_total - last_cursor[1])
+            if not sent_snapshot:
+                new_logs = active_logs
+            elif cursor < last_cursor:
+                # 新的一轮运行（或监听日志被重置）导致序号回退，重发全量快照
+                new_logs = active_logs
+            elif new_count > 0:
+                new_logs = active_logs[-new_count:]
+            else:
+                new_logs = []
+
+            if new_logs:
                 await websocket.send_json(
                     {
                         "type": "logs",
                         "data": new_logs,
                         "is_running": is_running,
+                        "cursor": {"task": task_total, "monitor": monitor_total},
                     }
                 )
-                last_idx = len(active_logs)
                 sent_snapshot = True
+            elif not sent_snapshot:
+                # 首次连接即使没有日志也要确认通道已建立
+                await websocket.send_json(
+                    {
+                        "type": "logs",
+                        "data": [],
+                        "is_running": is_running,
+                        "cursor": {"task": task_total, "monitor": monitor_total},
+                    }
+                )
+                sent_snapshot = True
+
+            last_cursor = cursor
 
             if (
                 not is_running
-                and last_idx >= len(active_logs)
+                and not new_logs
                 and (
                     seen_activity
                     or asyncio.get_running_loop().time() - connected_at >= 15

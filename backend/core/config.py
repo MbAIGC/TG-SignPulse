@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import secrets
+import tempfile
 from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
@@ -9,6 +11,14 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from backend.utils.storage import get_initial_data_dir, get_writable_base_dir
+
+try:  # pragma: no cover - Windows 无 fcntl，退化为仅原子写
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
+
+# 已有密钥文件短于该长度时视为不可信，重新生成（正常生成的密钥为 64 字符）
+_MIN_STORED_SECRET_LENGTH = 16
 
 
 def _load_env_file(path: Path) -> dict[str, str]:
@@ -95,6 +105,64 @@ def _is_weak_secret_key(value: str) -> bool:
     return False
 
 
+def _read_secret_file(secret_file: Path) -> str:
+    """读取持久化密钥；过短视为不可信并重新生成，同时把权限收紧到 0600。"""
+    try:
+        value = secret_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    if not value:
+        return ""
+    if len(value) < _MIN_STORED_SECRET_LENGTH:
+        print(
+            f"[config] 警告：{secret_file} 中保存的 JWT 密钥过短"
+            f"（少于 {_MIN_STORED_SECRET_LENGTH} 字符），将重新生成持久密钥，"
+            "已签发的登录令牌会失效。",
+            flush=True,
+        )
+        return ""
+    try:
+        os.chmod(secret_file, 0o600)
+    except OSError:
+        pass
+    return value
+
+
+def _write_secret_file_locked(secret_file: Path, generated: str) -> None:
+    """在文件锁内原子写入密钥，避免并发首启各自生成不同的密钥。
+
+    锁内会重读一次：其他进程若已写入，则直接复用（由调用方重新读取返回）。
+    """
+    lock_handle = None
+    try:
+        if fcntl is not None:
+            lock_handle = open(f"{secret_file}.lock", "a+")
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+
+        if _read_secret_file(secret_file):
+            return
+
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(secret_file.parent), prefix=".app_secret_key.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(generated)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp_name, 0o600)
+            os.replace(tmp_name, secret_file)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
+    finally:
+        if lock_handle is not None:
+            with contextlib.suppress(Exception):
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            lock_handle.close()
+
+
 def get_default_secret_key(env: Mapping[str, str] | None = None) -> str:
     env_map = env or os.environ
     env_secret = _read_env(env_map, "APP_SECRET_KEY")
@@ -113,21 +181,18 @@ def get_default_secret_key(env: Mapping[str, str] | None = None) -> str:
     base_dir.mkdir(parents=True, exist_ok=True)
     secret_file = base_dir / ".app_secret_key"
 
-    try:
-        existing = secret_file.read_text(encoding="utf-8").strip()
-        if existing:
-            return existing
-    except OSError:
-        pass
+    existing = _read_secret_file(secret_file)
+    if existing:
+        return existing
 
     generated = secrets.token_urlsafe(48)
     try:
-        secret_file.write_text(generated, encoding="utf-8")
-        # 密钥文件权限收紧为 0600，避免同宿主其他用户读取
-        try:
-            os.chmod(secret_file, 0o600)
-        except OSError:
-            pass
+        # 加锁 + 锁内重读：多 worker 并发首启必须共享同一个密钥，
+        # 否则 A 进程签发的 JWT 在 B 进程校验会失败。
+        _write_secret_file_locked(secret_file, generated)
+        existing = _read_secret_file(secret_file)
+        if existing:
+            return existing
     except OSError:
         # 生产模式下密钥未持久化 = 重启后所有旧 JWT 失效，必须拒绝启动；
         # 开发模式下则降级为可用的随机值但记录明显告警。

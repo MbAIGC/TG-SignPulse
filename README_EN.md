@@ -187,6 +187,25 @@ tests/        unit tests
 
 ## Changelog
 
+### 2026-10-14
+
+This round of fixes **borrows heavily from
+[loochenx/TG-SignPulse](https://github.com/loochenx/TG-SignPulse)** (v0.9.x). The full
+item-by-item comparison is in
+[docs/参照分叉仓库的代码对比与改进建议.md](docs/参照分叉仓库的代码对比与改进建议.md) (Chinese).
+
+- **Correct check-in result**: if any target chat fails, the whole run fails; partial success is no longer recorded as "already checked in today"
+- **Per-run log isolation**: concurrent accounts/tasks no longer share log buffers; bot replies are attributed by account + task prefix
+- **Realtime logs no longer stall**: incremental push by monotonic sequence (the buffer used to stop pushing once full); WebSocket reconnects with cursor resume
+- **Visible failures**: pre-checks distinguish expired sessions from transient network errors (the latter skips this run and retries once); keyword push failures are written to the task log
+- **Sturdier difference sync**: more retries, respects Telegram FloodWait, and reports a hard error instead of silently dropping updates
+- **Self-healing monitors**: watchdog with real RPC probes every 30s, rebuilds after consecutive failures, skips accounts busy with a signing task, and backs off on failed starts
+- **Reliable scheduling**: random-range tasks catch up once if the process restarted inside the window; tasks can be enabled/disabled
+- **Account health check**: automatic daily 09:00 inspection with deduplicated notifications
+- **Container and security**: runs as the data-volume owner with reduced privileges, supports a read-only root filesystem and capability dropping; secret key uses locked atomic writes; removed the 2FA-bypassing `/api/user/totp/reset`
+- **Panel**: 30-day status bars, invalid-account banner and badges, mobile bottom navigation, cron scheduling input, request timeouts, unified toast/confirm dialogs, update check
+- Verified with 313 backend tests, ruff clean, and a passing frontend build (incl. type check)
+
 ### 2026-09-01
 
 - **Synced upstream tg-signer 0.9.1** (selective import): fixes a Kurigram
@@ -259,8 +278,13 @@ tests/        unit tests
 - Upstream: [akasls/TG-SignPulse](https://github.com/akasls/TG-SignPulse) (archived),
   which itself references [amchii/tg-signer](https://github.com/amchii/tg-signer).
   Thanks to both authors for their open-source work.
-- README structure and deployment docs referenced:
-  [loochenx/TG-SignPulse](https://github.com/loochenx/TG-SignPulse)
+- **Borrowed from: [loochenx/TG-SignPulse](https://github.com/loochenx/TG-SignPulse)** —
+  log isolation, reply attribution, difference-sync retries, monitor watchdog, account
+  health inspection, container privilege drop, failure retry and random-range catch-up in
+  this repository all follow that project's approach and trade-offs. See the item-by-item
+  comparison (Chinese) in
+  [docs/参照分叉仓库的代码对比与改进建议.md](docs/参照分叉仓库的代码对比与改进建议.md).
+  README structure and deployment docs also reference that project.
 - Continuous optimization of this repository is assisted by **Codex + Deepseek**.
 
 ## License

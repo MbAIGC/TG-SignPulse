@@ -217,12 +217,28 @@ def ready_check(response: Response) -> dict[str, str]:
 
 # 静态前端托管：优先使用配置的 web_dir（默认 <repo>/frontend/dist）。
 # Vite 构建产物中哈希资源位于 dist/assets，单独挂载以利用 FastAPI 静态文件处理。
+class _ImmutableStaticFiles(StaticFiles):
+    """Vite 构建产物的文件名带内容哈希，可以放心长期缓存。"""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
+def _html_response(path) -> FileResponse:
+    """HTML 入口不缓存，避免升级后浏览器仍用旧壳加载新资源。"""
+    response = FileResponse(path)
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 web_dir = settings.resolve_web_dir()
 assets_dir = web_dir / "assets"
 if assets_dir.exists():
     app.mount(
         "/assets",
-        StaticFiles(directory=str(assets_dir)),
+        _ImmutableStaticFiles(directory=str(assets_dir)),
         name="web_assets",
     )
 
@@ -230,6 +246,11 @@ if assets_dir.exists():
 # Catch-all 路由：处理所有前端路由，返回 index.html，刷新页面时不会 404
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
+    # 未知 /api/* 必须返回 404：否则会命中 SPA 兜底返回 HTML 200，
+    # 或在开发模式下被 307 重定向到前端 dev server。
+    if full_path == "api" or full_path.startswith("api/"):
+        return Response(content="Not Found", status_code=status.HTTP_404_NOT_FOUND)
+
     # API 文档端点已在生产环境禁用（docs_url/redoc_url/openapi_url=None），
     # 直接 404，避免落入 SPA 兜底/重定向逻辑
     if full_path in ("docs", "redoc", "openapi.json", "docs/oauth2-redirect"):
@@ -239,17 +260,28 @@ async def serve_spa(full_path: str):
     if web_dir.exists():
         try:
             resolved_web = web_dir.resolve()
+
+            def _inside_web_dir(candidate) -> bool:
+                # 用 is_relative_to 而不是字符串前缀：前缀比较会误放行同前缀的兄弟目录
+                try:
+                    candidate.relative_to(resolved_web)
+                except ValueError:
+                    return False
+                return True
+
             file_path = (web_dir / full_path).resolve()
-            if str(file_path).startswith(str(resolved_web)) and file_path.is_file():
+            if _inside_web_dir(file_path) and file_path.is_file():
+                if file_path.suffix.lower() == ".html":
+                    return _html_response(file_path)
                 return FileResponse(file_path)
 
             html_path = (web_dir / f"{full_path}.html").resolve()
-            if str(html_path).startswith(str(resolved_web)) and html_path.is_file():
-                return FileResponse(html_path)
+            if _inside_web_dir(html_path) and html_path.is_file():
+                return _html_response(html_path)
 
             index_path = resolved_web / "index.html"
             if index_path.exists() and index_path.is_file():
-                return FileResponse(index_path)
+                return _html_response(index_path)
         except Exception:
             pass
 

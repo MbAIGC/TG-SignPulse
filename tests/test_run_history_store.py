@@ -35,7 +35,10 @@ def _entry(time: str, success: bool = True, run_id: str = "r1"):
 
 def test_save_and_load_entries(store):
     store.save_entry(
-        task_name="task1", account_name="acct", entry=_entry("2026-09-01T10:00:00"), max_entries=100
+        task_name="task1",
+        account_name="acct",
+        entry=_entry("2026-09-01T10:00:00"),
+        max_entries=100,
     )
     entries = store.load_entries(task_name="task1", account_name="acct")
     assert len(entries) == 1
@@ -61,16 +64,24 @@ def test_save_truncates_to_max_entries(store):
 
 
 def test_load_respects_account_filter(store):
-    store.save_entry(task_name="task1", account_name="acctA", entry=_entry("t1"), max_entries=100)
-    store.save_entry(task_name="task1", account_name="acctB", entry=_entry("t2"), max_entries=100)
+    store.save_entry(
+        task_name="task1", account_name="acctA", entry=_entry("t1"), max_entries=100
+    )
+    store.save_entry(
+        task_name="task1", account_name="acctB", entry=_entry("t2"), max_entries=100
+    )
     only_a = store.load_entries(task_name="task1", account_name="acctA")
     assert len(only_a) == 1
     assert only_a[0]["account_name"] == "acctA"
 
 
 def test_delete_entry(store):
-    store.save_entry(task_name="task1", account_name="acct", entry=_entry("t1"), max_entries=100)
-    store.save_entry(task_name="task1", account_name="acct", entry=_entry("t2"), max_entries=100)
+    store.save_entry(
+        task_name="task1", account_name="acct", entry=_entry("t1"), max_entries=100
+    )
+    store.save_entry(
+        task_name="task1", account_name="acct", entry=_entry("t2"), max_entries=100
+    )
     removed = store.delete_entry(task_name="task1", account_name="acct", time="t1")
     assert removed == 1
     remaining = store.load_entries(task_name="task1", account_name="acct")
@@ -78,8 +89,12 @@ def test_delete_entry(store):
 
 
 def test_clear(store):
-    store.save_entry(task_name="task1", account_name="acct", entry=_entry("t1"), max_entries=100)
-    store.save_entry(task_name="task2", account_name="acct", entry=_entry("t2"), max_entries=100)
+    store.save_entry(
+        task_name="task1", account_name="acct", entry=_entry("t1"), max_entries=100
+    )
+    store.save_entry(
+        task_name="task2", account_name="acct", entry=_entry("t2"), max_entries=100
+    )
     assert store.clear() == 2
     assert store.total_entries() == 0
 
@@ -87,12 +102,16 @@ def test_clear(store):
 def test_delete_older_than(store):
     """按 time（ISO 字典序）删除早于阈值的条目。"""
     store.save_entry(
-        task_name="task1", account_name="acct",
-        entry=_entry("2026-01-01T00:00:00", run_id="old"), max_entries=100,
+        task_name="task1",
+        account_name="acct",
+        entry=_entry("2026-01-01T00:00:00", run_id="old"),
+        max_entries=100,
     )
     store.save_entry(
-        task_name="task1", account_name="acct",
-        entry=_entry("2026-01-02T00:00:00", run_id="new"), max_entries=100,
+        task_name="task1",
+        account_name="acct",
+        entry=_entry("2026-01-02T00:00:00", run_id="new"),
+        max_entries=100,
     )
     removed = store.delete_older_than(before_iso="2026-01-01T12:00:00")
     assert removed == 1
@@ -101,7 +120,9 @@ def test_delete_older_than(store):
 
 
 def test_delete_older_than_noop_when_none(store):
-    store.save_entry(task_name="task1", account_name="acct", entry=_entry("t1"), max_entries=100)
+    store.save_entry(
+        task_name="task1", account_name="acct", entry=_entry("t1"), max_entries=100
+    )
     assert store.delete_older_than(before_iso="0001-01-01T00:00:00") == 0
     assert store.total_entries() == 1
 
@@ -152,3 +173,77 @@ def test_json_compat_load_fallback(tmp_path, monkeypatch):
         import backend.services.sign_tasks as st
 
         st._sign_task_service = None
+
+
+def test_daily_stats_buckets_by_local_date_and_fills_gaps(tmp_path, monkeypatch):
+    """30 天状态条：按本地日期聚合，缺失日期补零，无记录时成功率为 None。"""
+    from datetime import timedelta
+
+    from backend.services.run_history import RunHistoryStore
+    from backend.utils.time import utc_now
+
+    store = RunHistoryStore(tmp_path / "workdir")
+    today = utc_now().date()
+    yesterday = today - timedelta(days=1)
+
+    def _entry(day, success):
+        return {
+            "time": f"{day.isoformat()}T10:00:00+00:00",
+            "success": success,
+            "run_id": f"{day.isoformat()}-{success}",
+        }
+
+    store.save_entry(
+        task_name="daily",
+        account_name="acct",
+        entry=_entry(today, True),
+        max_entries=50,
+    )
+    store.save_entry(
+        task_name="daily",
+        account_name="acct",
+        entry=_entry(today, False),
+        max_entries=50,
+    )
+    store.save_entry(
+        task_name="daily",
+        account_name="acct",
+        entry=_entry(yesterday, True),
+        max_entries=50,
+    )
+    # 其他任务不应混入
+    store.save_entry(
+        task_name="other",
+        account_name="acct",
+        entry=_entry(today, False),
+        max_entries=50,
+    )
+
+    stats = store.daily_stats(days=7, task_name="daily", account_name="acct")
+
+    assert len(stats["days"]) == 7
+    assert stats["days"][-1]["date"] == today.isoformat()
+    assert stats["days"][-1]["success"] == 1
+    assert stats["days"][-1]["failed"] == 1
+    assert stats["days"][-2]["success"] == 1
+    # 中间没有记录的日期补零
+    assert stats["days"][0] == {
+        "date": (today - timedelta(days=6)).isoformat(),
+        "success": 0,
+        "failed": 0,
+    }
+    assert stats["success"] == 2
+    assert stats["failed"] == 1
+    assert stats["success_rate"] == round(2 / 3, 4)
+
+
+def test_daily_stats_without_records_has_no_rate(tmp_path):
+    from backend.services.run_history import RunHistoryStore
+
+    store = RunHistoryStore(tmp_path / "workdir")
+
+    stats = store.daily_stats(days=7)
+
+    assert stats["total"] == 0
+    assert stats["success_rate"] is None
+    assert len(stats["days"]) == 7

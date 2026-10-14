@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -101,35 +99,42 @@ def test_task_log_path_traversal_defense(client_with_user, monkeypatch, tmp_path
     assert res_safe.json()["output"] == "Valid log content"
 
 
-def test_totp_reset_requires_password(client_with_user):
+def test_totp_reset_endpoint_is_removed(client_with_user):
+    """回归：仅凭登录态 + 密码即可关闭 2FA 的降级接口已移除。
+
+    忘记验证器时必须走服务器终端 CLI，或配置 APP_EMERGENCY_RESET_KEY 后
+    调用 /api/auth/reset-totp。
+    """
     client, headers, user, db = client_with_user
 
     user.totp_secret = "JBSWY3DPEHPK3PXP"
     db.commit()
 
-    # Attempt reset with wrong password
-    res = client.post("/api/user/totp/reset", json={"password": "WrongPassword"}, headers=headers)
-    assert res.status_code == 400
-    assert res.json()["detail"] == "密码错误"
-
-    # Attempt reset with correct password
-    res = client.post("/api/user/totp/reset", json={"password": "ValidPassword123!"}, headers=headers)
-    assert res.status_code == 200
-    assert res.json()["success"] is True
+    res = client.post(
+        "/api/user/totp/reset",
+        json={"password": "ValidPassword123!"},
+        headers=headers,
+    )
+    assert res.status_code in (404, 405)
 
     db.refresh(user)
-    assert user.totp_secret is None
+    # 两步验证必须保持启用
+    assert user.totp_secret == "JBSWY3DPEHPK3PXP"
 
 
 def test_login_flow_with_and_without_2fa(client_with_user):
     from backend.vendor import pyotp
+
     client, headers, user, db = client_with_user
 
     # 1. Login without 2FA
     user.totp_secret = None
     db.commit()
 
-    res = client.post("/api/auth/login", json={"username": user.username, "password": "ValidPassword123!"})
+    res = client.post(
+        "/api/auth/login",
+        json={"username": user.username, "password": "ValidPassword123!"},
+    )
     assert res.status_code == 200
     assert "access_token" in res.json()
 
@@ -139,24 +144,42 @@ def test_login_flow_with_and_without_2fa(client_with_user):
     db.commit()
 
     # Without TOTP code
-    res_no_totp = client.post("/api/auth/login", json={"username": user.username, "password": "ValidPassword123!"})
+    res_no_totp = client.post(
+        "/api/auth/login",
+        json={"username": user.username, "password": "ValidPassword123!"},
+    )
     assert res_no_totp.status_code == 401
     assert res_no_totp.json()["detail"] == "TOTP_REQUIRED_OR_INVALID"
 
     # With invalid TOTP code
-    res_bad_totp = client.post("/api/auth/login", json={"username": user.username, "password": "ValidPassword123!", "totp_code": "000000"})
+    res_bad_totp = client.post(
+        "/api/auth/login",
+        json={
+            "username": user.username,
+            "password": "ValidPassword123!",
+            "totp_code": "000000",
+        },
+    )
     assert res_bad_totp.status_code == 401
     assert res_bad_totp.json()["detail"] == "TOTP_REQUIRED_OR_INVALID"
 
     # With valid TOTP code
     valid_code = pyotp.TOTP(secret).now()
-    res_ok_totp = client.post("/api/auth/login", json={"username": user.username, "password": "ValidPassword123!", "totp_code": valid_code})
+    res_ok_totp = client.post(
+        "/api/auth/login",
+        json={
+            "username": user.username,
+            "password": "ValidPassword123!",
+            "totp_code": valid_code,
+        },
+    )
     assert res_ok_totp.status_code == 200
     assert "access_token" in res_ok_totp.json()
 
 
 def test_fastapi_docs_endpoints_disabled(client_with_user):
     from backend.main import app
+
     client, headers, user, db = client_with_user
 
     # In production/hardened mode, docs, redoc, openapi.json should be disabled
@@ -173,7 +196,9 @@ def test_fastapi_docs_endpoints_disabled(client_with_user):
         assert res_openapi.status_code in (404, 405)
 
 
-def test_cleanup_old_logs_rejects_outside_logs_dir(client_with_user, monkeypatch, tmp_path):
+def test_cleanup_old_logs_rejects_outside_logs_dir(
+    client_with_user, monkeypatch, tmp_path
+):
     """回归：cleanup_old_logs 删除前必须校验路径位于日志目录内（GPT 3.5）。"""
     from datetime import timedelta
 
@@ -194,8 +219,22 @@ def test_cleanup_old_logs_rejects_outside_logs_dir(client_with_user, monkeypatch
 
     cutoff_date = utc_now_naive() - timedelta(days=10)
 
-    db.add(TaskLog(task_id=1, status="success", log_path=str(outside_file), started_at=cutoff_date))
-    db.add(TaskLog(task_id=1, status="success", log_path=str(inside_file), started_at=cutoff_date))
+    db.add(
+        TaskLog(
+            task_id=1,
+            status="success",
+            log_path=str(outside_file),
+            started_at=cutoff_date,
+        )
+    )
+    db.add(
+        TaskLog(
+            task_id=1,
+            status="success",
+            log_path=str(inside_file),
+            started_at=cutoff_date,
+        )
+    )
     db.commit()
 
     cleanup_old_logs(db, days=3)
@@ -248,7 +287,9 @@ def test_weak_secret_key_rejected():
     assert get_default_secret_key({"APP_SECRET_KEY": strong}) == strong
 
 
-def test_auto_generated_secret_key_0600_and_production_write_failure(monkeypatch, tmp_path):
+def test_auto_generated_secret_key_0600_and_production_write_failure(
+    monkeypatch, tmp_path
+):
     """修复 5.1：自动生成的密钥文件权限为 0600；生产模式写失败必须拒绝启动。"""
     from backend.core.config import get_default_secret_key
 
@@ -267,12 +308,17 @@ def test_auto_generated_secret_key_0600_and_production_write_failure(monkeypatch
     data_dir2 = tmp_path / "data2"
     data_dir2.mkdir(exist_ok=True)
 
-    def _boom_write(path, *a, **k):
+    import backend.core.config as config_module
+
+    def _boom_mkstemp(*_args, **_kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr(Path, "write_text", _boom_write)
+    # 原子写走 mkstemp + fsync，故障注入点必须落在真实写入路径上
+    monkeypatch.setattr(config_module.tempfile, "mkstemp", _boom_mkstemp)
     with pytest.raises(RuntimeError):
-        get_default_secret_key({"APP_DATA_DIR": str(data_dir2), "APP_ENV": "production"})
+        get_default_secret_key(
+            {"APP_DATA_DIR": str(data_dir2), "APP_ENV": "production"}
+        )
 
     # 3) 开发/默认模式写失败：降级为随机值且不抛异常（仍返回可用密钥）
     data_dir3 = tmp_path / "data3"
@@ -310,24 +356,24 @@ def test_session_string_file_permissions_0o600(monkeypatch, tmp_path):
 
 
 def test_ws_first_frame_auth_rejects_missing_token(client_with_user):
-    """修复 7：WebSocket 首帧认证——不发 token 首帧必须被拒（1008）。"""
+    """修复 7：WebSocket 首帧认证——不发 token 首帧必须被拒（4401）。"""
     client, headers, user, db = client_with_user
 
     with client.websocket_connect("/api/tasks/ws/1") as ws:
         # 发送非 JSON / 无 token 内容
         ws.send_text("hello")
         res = ws.receive()
-        assert res.get("code") == 1008 or res.get("type") == "websocket.close"
+        assert res.get("code") == 4401 or res.get("type") == "websocket.close"
 
 
 def test_ws_first_frame_auth_rejects_invalid_token(client_with_user):
-    """修复 7：WebSocket 首帧认证——无效 token 必须被拒（1008）。"""
+    """修复 7：WebSocket 首帧认证——无效 token 必须被拒（4401）。"""
     client, headers, user, db = client_with_user
 
     with client.websocket_connect("/api/tasks/ws/1") as ws:
         ws.send_json({"token": "invalid-token"})
         res = ws.receive()
-        assert res.get("code") == 1008 or res.get("type") == "websocket.close"
+        assert res.get("code") == 4401 or res.get("type") == "websocket.close"
 
 
 def test_ws_first_frame_auth_accepts_valid_token(client_with_user):

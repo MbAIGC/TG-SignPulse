@@ -251,15 +251,26 @@ async def _run_task_once_locked(db: Session, task: Task, account: Account) -> Ta
         sign_service = get_sign_task_service()
 
         async def bridge_logs() -> None:
-            task_key_last = 0
+            # 用累计序号而不是长度：源缓冲区会截断，长度打满后增量会丢失
+            last_cursor = (0, 0)
             while True:
                 try:
-                    entries = sign_service.get_active_logs(
-                        account.account_name, task.name
+                    entries, task_total, monitor_total = (
+                        sign_service.get_active_logs_with_cursor(
+                            task.name, account_name=account.account_name
+                        )
                     )
-                    for line in entries[task_key_last:]:
+                    cursor = (task_total, monitor_total)
+                    if cursor < last_cursor:
+                        new_lines = entries
+                    else:
+                        new_count = (task_total - last_cursor[0]) + (
+                            monitor_total - last_cursor[1]
+                        )
+                        new_lines = entries[-new_count:] if new_count > 0 else []
+                    for line in new_lines:
                         log_callback(line)
-                    task_key_last = len(entries)
+                    last_cursor = cursor
                 except Exception:
                     pass
                 await asyncio.sleep(0.3)

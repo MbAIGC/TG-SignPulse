@@ -18,7 +18,7 @@ async def test_sign_task_account_check_does_not_reenter_account_lock(
 
     async def fake_check(account_name, task_name, **kwargs):
         calls.append(kwargs.get("lock_already_held", False))
-        return "skip execution"
+        return "invalid", "skip execution"
 
     monkeypatch.setattr(service, "_check_account_before_task", fake_check)
     monkeypatch.setattr(service, "get_task", lambda *args, **kwargs: {"name": "task"})
@@ -41,7 +41,7 @@ async def test_db_task_account_check_marks_existing_lock(monkeypatch, tmp_path):
 
     async def fake_check(account_name, task_name, **kwargs):
         calls.append(kwargs.get("lock_already_held", False))
-        return "skip execution"
+        return "invalid", "skip execution"
 
     monkeypatch.setattr(service, "_check_account_before_task", fake_check)
     monkeypatch.setattr(service, "get_task", lambda *args, **kwargs: {"name": "task"})

@@ -35,13 +35,16 @@ def test_flow_log_limits_are_applied(monkeypatch, tmp_path):
     monkeypatch.setenv("SIGN_TASK_HISTORY_MAX_FLOW_LINES", "20")
     monkeypatch.setenv("SIGN_TASK_HISTORY_MAX_LINE_CHARS", "80")
     service = SignTaskService()
-    lines = ["x" * 81] + ["ok"] * 20
+    # 超限时必须保留尾部（失败原因/最后回复在末尾），并丢弃最早的头部行
+    lines = ["dropped-header"] + ["ok"] * 20 + ["x" * 81]
 
     normalized, truncated, count = service._normalize_flow_logs(lines)
-    assert normalized[0] == "x" * 80
     assert len(normalized) == 20
+    assert "dropped-header" not in normalized
+    assert normalized[0] == "ok"
+    assert normalized[-1] == "x" * 77 + "..."
     assert truncated is True
-    assert count == 21
+    assert count == 22
 
 
 def test_history_delete_by_run_id_is_precise(tmp_path):

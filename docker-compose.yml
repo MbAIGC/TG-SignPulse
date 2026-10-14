@@ -20,6 +20,30 @@ services:
       - ACCOUNT_LOCK_FILE=${ACCOUNT_LOCK_FILE:-1}
       # 仅在前置反向代理可信并正确覆盖转发头时启用。
       - APP_TRUST_PROXY_HEADERS=${APP_TRUST_PROXY_HEADERS:-0}
+      # 容器入口按 /data 属主自适应运行身份；如需关闭权限修复设为 0
+      # - APP_AUTO_FIX_DATA_PERMS=0
+    # 安全加固：默认丢弃全部 capability，只加回入口脚本降权所需的最小集合
+    # （chown/chmod 需要 CHOWN、FOWNER、DAC_OVERRIDE；gosu 需要 SETUID/SETGID）。
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+    stop_grace_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
       interval: 30s

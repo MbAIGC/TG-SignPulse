@@ -3,12 +3,15 @@ import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { LayoutDashboard, Users, Zap, Terminal, Settings, UserCircle, GitBranch, Globe, Moon, Sun, Menu } from '@lucide/vue'
 import { useTheme } from '../composables/useTheme'
+import { useAccountHealth, useAccountHealthPolling } from '../composables/useAccountHealth'
 import { useI18n } from '../composables/useI18n'
 import UserProfileModal from '../components/settings/UserProfileModal.vue'
 
 const route = useRoute()
 const { isDark, toggleTheme } = useTheme()
 const { toggleLanguage, t } = useI18n()
+const { invalidCount } = useAccountHealth()
+useAccountHealthPolling()
 const isMobileMenuOpen = ref(false)
 const showProfileModal = ref(false)
 
@@ -63,6 +66,11 @@ const handleNavClick = () => {
         >
           <component :is="nav.icon" class="w-5 h-5 shrink-0" stroke-width="1.5" />
           <span class="ml-4 text-sm font-medium">{{ t(nav.labelKey) }}</span>
+          <span
+            v-if="nav.name === 'accounts' && invalidCount() > 0"
+            class="ml-auto min-w-5 h-5 px-1.5 rounded-full bg-rose-600 text-white text-[11px] font-semibold flex items-center justify-center"
+            :title="t('accounts.loginExpired')"
+          >{{ invalidCount() }}</span>
         </router-link>
       </nav>
 
@@ -99,7 +107,7 @@ const handleNavClick = () => {
         </div>
       </header>
 
-      <div class="flex-1 px-4 lg:px-8 pb-12 overflow-x-hidden">
+      <div class="flex-1 px-4 lg:px-8 pb-24 lg:pb-12 overflow-x-hidden">
         <router-view v-slot="{ Component }">
           <transition name="fade" mode="out-in">
             <component :is="Component" />
@@ -110,6 +118,26 @@ const handleNavClick = () => {
       <!-- Global Modals -->
       <UserProfileModal :isOpen="showProfileModal" @close="showProfileModal = false" />
     </main>
+
+    <!-- 移动端底部导航（含安全区留白） -->
+    <nav class="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 dark:bg-gray-950/95 backdrop-blur border-t border-gray-200 dark:border-gray-800/60 pb-[env(safe-area-inset-bottom)]">
+      <div class="flex items-stretch">
+        <router-link
+          v-for="nav in navigation"
+          :key="nav.id"
+          :to="{ name: nav.name }"
+          class="relative flex-1 flex flex-col items-center justify-center gap-0.5 py-2 transition-colors"
+          :class="route.name === nav.name ? 'text-gray-900 dark:text-gray-100' : 'text-gray-400 dark:text-gray-500'"
+        >
+          <component :is="nav.icon" class="w-5 h-5" :stroke-width="route.name === nav.name ? 2 : 1.5" />
+          <span class="text-[10px] font-medium">{{ t(nav.labelKey) }}</span>
+          <span
+            v-if="nav.name === 'accounts' && invalidCount() > 0"
+            class="absolute top-1 right-1/2 translate-x-4 min-w-4 h-4 px-1 rounded-full bg-rose-600 text-white text-[10px] font-semibold flex items-center justify-center"
+          >{{ invalidCount() }}</span>
+        </router-link>
+      </div>
+    </nav>
   </div>
 </template>
 
